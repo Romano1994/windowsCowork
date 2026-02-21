@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WindowsCowork</title>
+</head>
+<body>
+  <div id="app">
+    <!-- Title Bar -->
+    <header id="titlebar">
+      <span class="titlebar-title">WindowsCowork</span>
+    </header>
+
+    <!-- Main Content -->
+    <div id="main-layout">
+      <!-- Left Panel: File Explorer -->
+      <aside id="panel-files">
+        <div class="panel-header">
+          <span class="panel-label">File Explorer</span>
+          <button id="btn-select-folder" title="폴더 선택">...</button>
+        </div>
+        <div id="file-path-bar">
+          <input type="text" id="input-path" placeholder="경로 입력..." />
+          <button id="btn-go-path" title="이동">Go</button>
+        </div>
+        <div id="btn-parent-row">
+          <button id="btn-parent" title="상위 폴더">.. (상위 폴더)</button>
+        </div>
+        <ul id="file-list"></ul>
+      </aside>
+
+      <!-- Center Panel: Chat -->
+      <main id="panel-chat">
+        <div id="chat-messages"></div>
+        <div id="chat-input-area">
+          <textarea id="chat-input" placeholder="메시지를 입력하세요..." rows="2"></textarea>
+          <button id="btn-send" title="전송">Send</button>
+        </div>
+      </main>
+
+      <!-- Right Panel: Tasks -->
+      <aside id="panel-tasks">
+        <div class="panel-header">
+          <span class="panel-label">Tasks</span>
+          <button id="btn-clear-done" title="완료 항목 제거">Clear</button>
+        </div>
+        <div id="task-input-area">
+          <input type="text" id="task-input" placeholder="새 작업 추가..." />
+          <button id="btn-add-task" title="추가">+</button>
+        </div>
+        <ul id="task-list"></ul>
+        <div id="task-stats"></div>
+      </aside>
+    </div>
+  </div>
+</body>
+</html>
