@@ -5,7 +5,12 @@
       "Bash(npx dotenv:*)",
       "Bash(npx tsc:*)",
       "Bash(findstr:*)",
-      "Bash(npx electron-forge start:*)"
+      "Bash(npx electron-forge start:*)",
+      "Bash(npm install:*)",
+      "Bash(powershell:*)",
+      "Bash(netstat:*)",
+      "Bash(taskkill:*)",
+      "Bash(node -e:*)"
     ]
   }
 }
