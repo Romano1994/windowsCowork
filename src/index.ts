@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const pty = require('node-pty');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const pdfParse = require('pdf-parse');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { parseOfficeAsync } = require('officeparser');
@@ -15,23 +17,146 @@ if (require('electron-squirrel-startup')) {
 
 // ── API Config ──
 let apiConfig = {
-  provider: 'anthropic' as 'anthropic' | 'openai' | 'google',
+  provider: 'anthropic' as 'anthropic' | 'openai' | 'gemini' | 'claude-code' | 'codex',
   model: 'claude-sonnet-4-20250514',
   apiKey: '',
+};
+
+// ── CLI Processes (multi-PTY per session) ──
+interface PtyEntry {
+  proc: any;
+  provider: string;
+  scrollback: string;
+}
+const cliProcesses = new Map<string, PtyEntry>();
+const MAX_SCROLLBACK = 100_000;
+
+const CLI_COMMANDS: Record<string, { cmd: string; args: string[] }> = {
+  'claude-code': { cmd: 'claude', args: [] },
+  'codex': { cmd: 'codex', args: [] },
 };
 
 const SYSTEM_PROMPT = '당신은 Windows 데스크톱 자동화를 도와주는 유능한 AI 어시스턴트입니다. 한국어로 답변합니다.';
 
 const conversationHistory: Array<{ role: string; content: string | any[] }> = [];
 
+// ── IPC: API restore (no validation, sync from renderer on startup) ──
+ipcMain.handle('api:restore', (_event, config: { provider: string; model: string; apiKey: string }) => {
+  apiConfig = {
+    provider: config.provider as typeof apiConfig.provider,
+    model: config.model,
+    apiKey: config.apiKey,
+  };
+});
+
 // ── IPC: API Model (no validation, just update) ──
 ipcMain.handle('api:setModel', (_event, model: string) => {
   apiConfig.model = model;
 });
 
+// ── IPC: CLI Process (multi-PTY) ──
+ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?: string) => {
+  // If a PTY already exists for this session, just reattach
+  if (cliProcesses.has(sessionId)) {
+    return { ok: true, existing: true };
+  }
+
+  const mapping = CLI_COMMANDS[provider];
+  if (!mapping) return { ok: false, error: `Unknown CLI provider: ${provider}` };
+
+  try {
+    const isWin = process.platform === 'win32';
+    const file = isWin ? 'powershell.exe' : mapping.cmd;
+    const args = isWin
+      ? ['-NoLogo', '-NoProfile', '-Command', mapping.cmd, ...mapping.args]
+      : mapping.args;
+
+    console.log(`[pty:${sessionId}] spawning: ${file} ${args.join(' ')}`);
+
+    const proc = pty.spawn(file, args, {
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 24,
+      cwd: cwd || process.env.USERPROFILE || process.env.HOME || '.',
+      env: { ...process.env, FORCE_COLOR: '1' } as Record<string, string>,
+    });
+
+    console.log(`[pty:${sessionId}] spawned, pid: ${proc.pid}`);
+
+    const entry: PtyEntry = { proc, provider, scrollback: '' };
+    cliProcesses.set(sessionId, entry);
+
+    const win = BrowserWindow.getAllWindows()[0];
+
+    proc.onData((data: string) => {
+      // Accumulate scrollback
+      entry.scrollback += data;
+      if (entry.scrollback.length > MAX_SCROLLBACK) {
+        entry.scrollback = entry.scrollback.slice(-MAX_SCROLLBACK);
+      }
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('cli:output', sessionId, data);
+      }
+    });
+
+    proc.onExit(({ exitCode }: { exitCode: number }) => {
+      console.log(`[pty:${sessionId}:exit] code=${exitCode}`);
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('cli:exit', sessionId, exitCode);
+      }
+      cliProcesses.delete(sessionId);
+    });
+
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('cli:disconnect', (_event, sessionId: string) => {
+  const entry = cliProcesses.get(sessionId);
+  if (entry) {
+    entry.proc.kill();
+    cliProcesses.delete(sessionId);
+  }
+  return { ok: true };
+});
+
+ipcMain.on('cli:send', (_event, sessionId: string, data: string) => {
+  const entry = cliProcesses.get(sessionId);
+  if (entry) {
+    entry.proc.write(data);
+  }
+});
+
+ipcMain.on('cli:resize', (_event, sessionId: string, cols: number, rows: number) => {
+  const entry = cliProcesses.get(sessionId);
+  if (entry) {
+    try { entry.proc.resize(cols, rows); } catch { /* ignore */ }
+  }
+});
+
+ipcMain.handle('cli:exists', (_event, sessionId: string) => {
+  return { exists: cliProcesses.has(sessionId) };
+});
+
+ipcMain.handle('cli:getScrollback', (_event, sessionId: string) => {
+  const entry = cliProcesses.get(sessionId);
+  if (entry) {
+    return { ok: true, data: entry.scrollback };
+  }
+  return { ok: false, data: '' };
+});
+
 // ── IPC: API Config (validates key with a small test call) ──
 ipcMain.handle('api:setConfig', async (_event, config: { provider: string; model: string; apiKey: string }) => {
   const { provider, model, apiKey } = config;
+
+  // CLI providers skip validation
+  if (provider === 'claude-code' || provider === 'codex') {
+    apiConfig = { provider: provider as typeof apiConfig.provider, model, apiKey: '' };
+    return { ok: true };
+  }
 
   try {
     if (provider === 'anthropic') {
@@ -48,7 +173,7 @@ ipcMain.handle('api:setConfig', async (_event, config: { provider: string; model
         model, max_tokens: 10,
         messages: [{ role: 'user', content: 'hi' }],
       });
-    } else if (provider === 'google') {
+    } else if (provider === 'gemini') {
       const { GoogleGenerativeAI } = require('@google/generative-ai');
       const genAI = new GoogleGenerativeAI(apiKey);
       const m = genAI.getGenerativeModel({ model });
@@ -126,7 +251,7 @@ async function streamOpenAI(event: Electron.IpcMainInvokeEvent) {
   return fullResponse;
 }
 
-async function streamGoogle(event: Electron.IpcMainInvokeEvent) {
+async function streamGemini(event: Electron.IpcMainInvokeEvent) {
   const { GoogleGenerativeAI } = require('@google/generative-ai');
   const genAI = new GoogleGenerativeAI(apiConfig.apiKey);
   const model = genAI.getGenerativeModel({ model: apiConfig.model });
@@ -185,8 +310,8 @@ ipcMain.handle('chat:send', async (event, userMessage: string | any[]) => {
       case 'openai':
         fullResponse = await streamOpenAI(event);
         break;
-      case 'google':
-        fullResponse = await streamGoogle(event);
+      case 'gemini':
+        fullResponse = await streamGemini(event);
         break;
       default:
         fullResponse = await streamAnthropic(event);
@@ -252,21 +377,7 @@ ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
   }
 });
 
-const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
-const TEXT_EXTENSIONS = [
-  '.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm', '.css',
-  '.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.c', '.cpp', '.h',
-  '.cs', '.rb', '.go', '.rs', '.sh', '.bat', '.ps1', '.yaml', '.yml',
-  '.toml', '.ini', '.cfg', '.conf', '.log', '.sql', '.r', '.swift',
-];
-const SUPPORTED_EXTENSIONS = [...IMAGE_EXTENSIONS, '.pdf', '.pptx', '.docx', '.xlsx', ...TEXT_EXTENSIONS];
-const MEDIA_TYPES: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-};
+import { IMAGE_EXTENSIONS, SUPPORTED_EXTENSIONS, MEDIA_TYPES } from './constants/extensions';
 
 ipcMain.handle('fs:readFileForAI', async (_event, filePath: string) => {
   try {
@@ -363,6 +474,13 @@ const createWindow = (): void => {
 
   mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 };
+
+app.on('before-quit', () => {
+  for (const [, entry] of cliProcesses) {
+    entry.proc.kill();
+  }
+  cliProcesses.clear();
+});
 
 app.on('ready', createWindow);
 

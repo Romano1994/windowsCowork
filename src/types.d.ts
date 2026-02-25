@@ -36,6 +36,18 @@ declare global {
       config: {
         set: (config: { provider: string; model: string; apiKey: string }) => Promise<{ ok: boolean; error?: string }>;
         setModel: (model: string) => Promise<void>;
+        restore: (config: { provider: string; model: string; apiKey: string }) => Promise<void>;
+      };
+      cli: {
+        connect: (sessionId: string, provider: string, cwd?: string) =>
+          Promise<{ ok: boolean; existing?: boolean; error?: string }>;
+        disconnect: (sessionId: string) => Promise<{ ok: boolean }>;
+        send: (sessionId: string, data: string) => void;
+        resize: (sessionId: string, cols: number, rows: number) => void;
+        exists: (sessionId: string) => Promise<{ exists: boolean }>;
+        getScrollback: (sessionId: string) => Promise<{ ok: boolean; data: string }>;
+        onOutput: (cb: (sessionId: string, data: string) => void) => () => void;
+        onExit: (cb: (sessionId: string, code: number | null) => void) => () => void;
       };
       fs: {
         readDir: (path: string) => Promise<{
