@@ -68,9 +68,15 @@ const taskSlice = createSlice({
       state.tasks = state.tasks.filter((t) => !t.done);
       saveToStorage(state.tasks, state.counter);
     },
+    restoreTasks(state, action: PayloadAction<{ tasks: Task[]; counter: number }>) {
+      state.tasks = action.payload.tasks;
+      state.counter = action.payload.counter;
+      state.input = '';
+      saveToStorage(state.tasks, state.counter);
+    },
   },
 });
 
-export const { setTaskInput, addTask, toggleTask, deleteTask, clearDone } = taskSlice.actions;
+export const { setTaskInput, addTask, toggleTask, deleteTask, clearDone, restoreTasks } = taskSlice.actions;
 
 export default taskSlice.reducer;
