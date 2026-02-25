@@ -90,3 +90,7 @@ typings/
 
 # Electron-Forge
 out/
+
+# Project documentation
+PROJECT_CONTEXT*.md
+NUL
