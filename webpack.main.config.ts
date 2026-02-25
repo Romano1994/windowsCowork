@@ -17,4 +17,9 @@ export const mainConfig: Configuration = {
   resolve: {
     extensions: ['.js', '.ts', '.jsx', '.tsx', '.css', '.json'],
   },
+  // node-pty is a native module with conpty.dll/winpty-agent.exe dependencies.
+  // Exclude from webpack bundling so Node.js loads it directly from node_modules.
+  externals: {
+    'node-pty': 'commonjs node-pty',
+  },
 };

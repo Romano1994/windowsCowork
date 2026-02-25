@@ -15,7 +15,10 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
   },
-  rebuildConfig: {},
+  rebuildConfig: {
+    // node-pty ships N-API prebuilt binaries; skip native rebuild (requires Python + VS Build Tools)
+    onlyModules: [],
+  },
   makers: [
     new MakerSquirrel({}),
     new MakerZIP({}, ['darwin']),
