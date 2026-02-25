@@ -9,13 +9,18 @@ import {
   setStreaming,
 } from '../store/chatSlice';
 import { deleteSelectedFile, clearFileAlert } from '../store/fileSlice'
+import { isCliProvider } from '../store/apiSlice';
 import { store } from '../store';
+import TerminalView from './TerminalView';
 
 const ChatPanel: React.FC = () => {
   const dispatch = useAppDispatch();
   const { messages, input, isStreaming } = useAppSelector((s) => s.chat);
+  const { provider, connected } = useAppSelector((s) => s.api);
+  const activeSessionId = useAppSelector((s) => s.session.activeId);
   const selectedFile = useAppSelector((s) => s.file.selectedFile);
   const fileAlert = useAppSelector((s) => s.file.fileAlert);
+  const cliMode = isCliProvider(provider) && connected;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamTextRef = useRef('');
   const streamMsgIdRef = useRef(-1);
@@ -47,7 +52,15 @@ const ChatPanel: React.FC = () => {
 
   const sendMessage = useCallback(async () => {
     let text = input.trim();
-    if (!text || isStreaming) return;
+    if (!text) return;
+
+    if (cliMode) {
+      window.api.cli.send(activeSessionId || 'default', text + '\n');
+      dispatch(setInput(''));
+      return;
+    }
+
+    if (isStreaming) return;
 
     dispatch(setInput(''));
     dispatch(setStreaming(true));
@@ -128,7 +141,7 @@ const ChatPanel: React.FC = () => {
     } finally {
       dispatch(setStreaming(false));
     }
-  }, [input, isStreaming, fileAlert, dispatch]);
+  }, [input, isStreaming, fileAlert, cliMode, dispatch]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -143,39 +156,45 @@ const ChatPanel: React.FC = () => {
 
   return (
     <main id="panel-chat">
-      <div id="chat-messages">
-        {messages.map((msg) => (
-          <div key={msg.id} className={`chat-msg ${msg.type}`}>
-            {msg.text}
-          </div>
-        ))}
-        <div ref={messagesEndRef} />
-      </div>
-      {fileAlert && (
+      {cliMode ? (
+        <TerminalView provider={provider} sessionId={activeSessionId || 'default'} />
+      ) : (
+        <div id="chat-messages">
+          {messages.map((msg) => (
+            <div key={msg.id} className={`chat-msg ${msg.type}`}>
+              {msg.text}
+            </div>
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
+      )}
+      {!cliMode && fileAlert && (
         <div id="chat-file-alert">{fileAlert}</div>
       )}
-      {selectedFile && (
+      {!cliMode && selectedFile && (
         <div style={{display: 'flex'}}>
           <div id="chat-selected-file">{selectedFile}</div>
           <div className="btn_x" onClick={handleXBtn}>x</div>
         </div>
       )}
-      <div id="chat-input-area">
-        <textarea
-          id="chat-input"
-          value={input}
-          onChange={(e) => {
-            if (fileAlert) dispatch(clearFileAlert());
-            dispatch(setInput(e.target.value));
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder="Enter message..."
-          rows={2}
-        />
-        <button id="btn-send" onClick={sendMessage} disabled={isStreaming}>
-          Send
-        </button>
-      </div>
+      {!cliMode && (
+        <div id="chat-input-area">
+          <textarea
+            id="chat-input"
+            value={input}
+            onChange={(e) => {
+              if (fileAlert) dispatch(clearFileAlert());
+              dispatch(setInput(e.target.value));
+            }}
+            onKeyDown={handleKeyDown}
+            placeholder="Enter message..."
+            rows={2}
+          />
+          <button id="btn-send" onClick={sendMessage} disabled={isStreaming}>
+            Send
+          </button>
+        </div>
+      )}
     </main>
   );
 };

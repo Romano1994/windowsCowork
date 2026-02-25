@@ -2,6 +2,7 @@ import React, { useEffect, useCallback } from 'react';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { setDirectory, setInputPath, setSelectedFile, setFileAlert, setError } from '../store/fileSlice';
 import { removeWelcome } from '../store/chatSlice';
+import { isCliProvider } from '../store/apiSlice';
 
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
 const TEXT_EXTENSIONS = [
@@ -15,6 +16,9 @@ const SUPPORTED_EXTENSIONS = [...IMAGE_EXTENSIONS, '.pdf', '.pptx', '.docx', '.x
 const FileExplorer: React.FC = () => {
   const dispatch = useAppDispatch();
   const { currentPath, inputPath, entries, selectedFile, error } = useAppSelector((s) => s.file);
+  const { provider, connected } = useAppSelector((s) => s.api);
+  const activeSessionId = useAppSelector((s) => s.session.activeId);
+  const cliMode = isCliProvider(provider) && connected;
 
   const loadDirectory = useCallback(async (dirPath: string) => {
     const result = await window.api.fs.readDir(dirPath);
@@ -63,6 +67,15 @@ const FileExplorer: React.FC = () => {
     }
   };
 
+  const handleEntryDoubleClick = (entry: { name: string; isDirectory: boolean }) => {
+    if (!cliMode || entry.isDirectory) return;
+    const sep = currentPath.endsWith('\\') || currentPath.endsWith('/') ? '' : '\\';
+    const fullPath = currentPath + sep + entry.name;
+    // Wrap in quotes if path contains spaces
+    const pathStr = fullPath.includes(' ') ? `"${fullPath}"` : fullPath;
+    window.api.cli.send(activeSessionId || 'default', pathStr);
+  };
+
   const handleSelectFolder = async () => {
     const result = await window.api.fs.selectFolder();
     if (result.ok && result.path) {
@@ -97,7 +110,7 @@ const FileExplorer: React.FC = () => {
       <ul id="file-list">
         {error && <li style={{ color: 'var(--red)', padding: 10 }}>{error}</li>}
         {entries.map((entry) => (
-          <li key={entry.name} className={!entry.isDirectory && entry.name === selectedFile ? 'active' : ''} onClick={() => handleEntryClick(entry)}>
+          <li key={entry.name} className={!entry.isDirectory && entry.name === selectedFile ? 'active' : ''} onClick={() => handleEntryClick(entry)} onDoubleClick={() => handleEntryDoubleClick(entry)}>
             <span className={`file-icon ${entry.isDirectory ? 'dir' : 'file'}`}>
               {entry.isDirectory ? '\u{1F4C1}' : '\u{1F4C4}'}
             </span>
