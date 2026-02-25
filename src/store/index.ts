@@ -3,6 +3,7 @@ import chatReducer from './chatSlice';
 import fileReducer from './fileSlice';
 import taskReducer from './taskSlice';
 import apiReducer from './apiSlice';
+import sessionReducer from './sessionSlice';
 
 export const store = configureStore({
   reducer: {
@@ -10,6 +11,7 @@ export const store = configureStore({
     file: fileReducer,
     task: taskReducer,
     api: apiReducer,
+    session: sessionReducer,
   },
 });
 

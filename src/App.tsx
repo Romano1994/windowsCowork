@@ -1,7 +1,7 @@
 import React from 'react';
 import FileExplorer from './components/FileExplorer';
 import ChatPanel from './components/ChatPanel';
-import TaskPanel from './components/TaskPanel';
+import SessionPanel from './components/SessionPanel';
 import ApiPanel from './components/ApiPanel';
 
 const App: React.FC = () => {
@@ -14,7 +14,7 @@ const App: React.FC = () => {
         <FileExplorer />
         <ChatPanel />
         <div id="panel-right">
-          <TaskPanel />
+          <SessionPanel />
           <ApiPanel />
         </div>
       </div>
