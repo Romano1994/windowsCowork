@@ -1,18 +1,118 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// ── Error Logging (using fixed path before app.ready) ──
+const logFile = path.join(process.env.APPDATA || '', 'windows-cowork-error.log');
+
+const writeLog = (message: string) => {
+  try {
+    const timestamp = new Date().toISOString();
+    fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
+    console.log(`[LOG] ${message}`);
+  } catch (e) {
+    console.error(`Failed to write log: ${e}`);
+  }
+};
+
+const isConptyConsoleListAgent =
+  process.platform === 'win32' &&
+  typeof process.argv[1] === 'string' &&
+  process.argv[1].toLowerCase().includes('conpty_console_list_agent');
+
+if (isConptyConsoleListAgent) {
+  const shellPid = Number.parseInt(process.argv[2] || '', 10);
+
+  try {
+    const utilsPath = path.join(path.dirname(process.argv[1]), 'utils');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { loadNativeModule } = require(utilsPath);
+    const getConsoleProcessList = loadNativeModule('conpty_console_list').module.getConsoleProcessList;
+    const consoleProcessList = Number.isNaN(shellPid) ? [] : getConsoleProcessList(shellPid);
+
+    if (typeof process.send === 'function') {
+      process.send({ consoleProcessList });
+    }
+  } catch (error: any) {
+    const message = error?.message || String(error);
+    writeLog(`[conpty-agent] failed: ${message}`);
+
+    if (!Number.isNaN(shellPid) && typeof process.send === 'function') {
+      process.send({ consoleProcessList: [shellPid] });
+    }
+  }
+
+  process.exit(0);
+}
+
+// Write startup message before anything else
+try {
+  writeLog('=== Application Started ===');
+} catch (e) {
+  console.error('Failed to initialize logging');
+}
+
+// Catch uncaught exceptions
+process.on('uncaughtException', (error) => {
+  writeLog(`UNCAUGHT EXCEPTION: ${error.message}\n${error.stack}`);
+  console.error(error);
+});
+
+// Catch unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  writeLog(`UNHANDLED REJECTION: ${reason}`);
+  console.error(reason);
+});
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const pty = require('node-pty');
+let pty: any;
+try {
+  writeLog(`Node modules path: ${__dirname}/node_modules/node-pty`);
+  pty = require('node-pty');
+  writeLog('✓ node-pty loaded successfully');
+} catch (error: any) {
+  const errorMsg = error?.message || String(error);
+  const errorStack = error?.stack || '';
+  writeLog(`✗ Failed to load node-pty: ${errorMsg}\nStack: ${errorStack}`);
+  console.error('node-pty load error:', error);
+  // Don't throw - continue anyway for now
+  pty = null;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const pdfParse = require('pdf-parse');
+let pdfParse: any;
+try {
+  pdfParse = require('pdf-parse');
+  writeLog('✓ pdf-parse loaded');
+} catch (e: any) {
+  writeLog(`✗ pdf-parse failed: ${e.message}`);
+  pdfParse = null;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { parseOfficeAsync } = require('officeparser');
+let parseOfficeAsync: any;
+try {
+  ({ parseOfficeAsync } = require('officeparser'));
+  writeLog('✓ officeparser loaded');
+} catch (e: any) {
+  writeLog(`✗ officeparser failed: ${e.message}`);
+  parseOfficeAsync = null;
+}
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 
-if (require('electron-squirrel-startup')) {
+writeLog(`process.argv: ${process.argv.join(' ')}`);
+
+// Handle Squirrel events (install, update, uninstall)
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const isSquirrelStartup = require('electron-squirrel-startup');
+if (isSquirrelStartup) {
+  writeLog('Squirrel startup detected → app.quit()');
   app.quit();
+  process.exit(0);
+} else {
+  writeLog('✓ Not a squirrel event, continuing...');
 }
 
 // ── API Config ──
@@ -62,16 +162,19 @@ ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?
   }
 
   const mapping = CLI_COMMANDS[provider];
-  if (!mapping) return { ok: false, error: `Unknown CLI provider: ${provider}` };
+  if (!mapping) {
+    writeLog(`[pty:${sessionId}] Unknown CLI provider: ${provider}`);
+    return { ok: false, error: `Unknown CLI provider: ${provider}` };
+  }
 
   try {
     const isWin = process.platform === 'win32';
-    const file = isWin ? 'powershell.exe' : mapping.cmd;
+    const file = isWin ? 'cmd.exe' : mapping.cmd;
     const args = isWin
-      ? ['-NoLogo', '-NoProfile', '-Command', mapping.cmd, ...mapping.args]
+      ? ['/C', mapping.cmd, ...mapping.args]
       : mapping.args;
 
-    console.log(`[pty:${sessionId}] spawning: ${file} ${args.join(' ')}`);
+    writeLog(`[pty:${sessionId}] spawning: ${file} ${args.join(' ')}`);
 
     const proc = pty.spawn(file, args, {
       name: 'xterm-256color',
@@ -81,7 +184,7 @@ ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?
       env: { ...process.env, FORCE_COLOR: '1' } as Record<string, string>,
     });
 
-    console.log(`[pty:${sessionId}] spawned, pid: ${proc.pid}`);
+    writeLog(`[pty:${sessionId}] spawned, pid: ${proc.pid}`);
 
     const entry: PtyEntry = { proc, provider, scrollback: '' };
     cliProcesses.set(sessionId, entry);
@@ -100,7 +203,7 @@ ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?
     });
 
     proc.onExit(({ exitCode }: { exitCode: number }) => {
-      console.log(`[pty:${sessionId}:exit] code=${exitCode}`);
+      writeLog(`[pty:${sessionId}:exit] code=${exitCode}`);
       if (win && !win.isDestroyed()) {
         win.webContents.send('cli:exit', sessionId, exitCode);
       }
@@ -109,6 +212,7 @@ ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?
 
     return { ok: true };
   } catch (err: any) {
+    writeLog(`[pty:${sessionId}] spawn error: ${err.message || String(err)}`);
     return { ok: false, error: err.message || String(err) };
   }
 });
@@ -459,20 +563,27 @@ ipcMain.handle('fs:getHome', () => {
 
 // ── Window ──
 const createWindow = (): void => {
-  const mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 900,
-    minHeight: 600,
-    title: 'WindowsCowork',
-    webPreferences: {
-      preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
+  writeLog('createWindow() called');
+  try {
+    const mainWindow = new BrowserWindow({
+      width: 1280,
+      height: 800,
+      minWidth: 900,
+      minHeight: 600,
+      title: 'FreiCowork',
+      webPreferences: {
+        preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
 
-  mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
+    writeLog(`Window created, loading URL: ${MAIN_WINDOW_WEBPACK_ENTRY}`);
+    mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
+    writeLog('loadURL called');
+  } catch (e: any) {
+    writeLog(`✗ createWindow error: ${e.message}\n${e.stack}`);
+  }
 };
 
 app.on('before-quit', () => {
@@ -482,7 +593,10 @@ app.on('before-quit', () => {
   cliProcesses.clear();
 });
 
-app.on('ready', createWindow);
+app.on('ready', () => {
+  writeLog('app.ready event fired');
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
