@@ -10,7 +10,30 @@
       "Bash(powershell:*)",
       "Bash(netstat:*)",
       "Bash(taskkill:*)",
-      "Bash(node -e:*)"
+      "Bash(node -e:*)",
+      "Bash(git rm:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(dir:*)",
+      "Bash(xargs ls:*)",
+      "Bash(\"C:\\\\Users\\\\fhaks\\\\AppData\\\\Local\\\\windows_cowork\\\\Update.exe\" --uninstall)",
+      "Bash(\"C:/FreiCowork/out/make/squirrel.windows/x64/FreiCowork-1.0.0 Setup.exe\")",
+      "Bash(where:*)",
+      "Bash(ls \"C:\\\\FreiCowork\\\\node_modules\\\\node-pty\\\\prebuilds\\\\win32-x64\"\" 2>nul || echo \"Directory not found \")",
+      "Bash(cmd /C \"dir C:\\\\FreiCowork\\\\node_modules\\\\node-pty\\\\build\\\\Release 2>nul || echo NOT FOUND\")",
+      "Bash(cmd /C \"dir /S /B C:\\\\FreiCowork\\\\node_modules\\\\node-pty\\\\*.node 2>nul || echo NO .node FILES\")",
+      "Bash(cmd /C \"npx electron-forge start\")",
+      "Bash(npm start)",
+      "Bash(cmd /C \"for /f \"\"tokens=5\"\" %a in \\(''netstat -aon ^| findstr :9000 ^| findstr LISTEN''\\) do taskkill /PID %a /F\")",
+      "Bash(cmd /C \"taskkill /IM electron.exe /F 2>nul & taskkill /IM \"\"FreiCowork.exe\"\" /F 2>nul & echo Done\")",
+      "Bash(cmd /C \"netstat -aon | findstr :9000\")",
+      "Bash(cmd /C \"taskkill /IM node.exe /F 2>nul & timeout /t 2 /nobreak >nul & echo Done\")",
+      "Bash(cmd /C \"netstat -ano | findstr LISTEN | findstr 9000\")",
+      "Bash(cmd /C \"netstat -ano | findstr 9000\")",
+      "Bash(cmd /C \"rmdir /S /Q C:\\\\FreiCowork\\\\.webpack 2>nul & echo Cleaned\")",
+      "Bash(cmd /C \"taskkill /PID 17912 /F\")",
+      "Bash(cmd /C \"taskkill /PID 17912 /T /F\")",
+      "Bash(npm run make:*)"
     ]
   }
 }
