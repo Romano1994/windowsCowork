@@ -91,6 +91,11 @@ typings/
 # Electron-Forge
 out/
 
+# Icon source files (design files)
+assets/*.psd
+assets/*.ai
+assets/*.sketch
+
 # Project documentation
 PROJECT_CONTEXT*.md
 NUL
