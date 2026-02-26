@@ -8,7 +8,7 @@ const App: React.FC = () => {
   return (
     <div id="app">
       <header id="titlebar">
-        <span className="titlebar-title">WindowsCowork</span>
+        <span className="titlebar-title">FreiCowork</span>
       </header>
       <div id="main-layout">
         <FileExplorer />

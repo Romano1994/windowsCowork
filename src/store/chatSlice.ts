@@ -15,7 +15,7 @@ interface ChatState {
 
 const initialState: ChatState = {
   messages: [
-    { id: 0, type: 'system', text: 'WindowsCowork에 오신 것을 환영합니다. 무엇을 도와드릴까요?' },
+    { id: 0, type: 'system', text: 'FreiCowork에 오신 것을 환영합니다. 무엇을 도와드릴까요?' },
   ],
   input: '',
   isStreaming: false,
@@ -61,7 +61,7 @@ const chatSlice = createSlice({
     restoreMessages(state, action: PayloadAction<{ messages: ChatMessage[]; nextId: number }>) {
       state.messages = action.payload.messages.length > 0
         ? action.payload.messages
-        : [{ id: 0, type: 'system', text: 'WindowsCowork에 오신 것을 환영합니다. 무엇을 도와드릴까요?' }];
+        : [{ id: 0, type: 'system', text: 'FreiCowork에 오신 것을 환영합니다. 무엇을 도와드릴까요?' }];
       state.nextId = action.payload.nextId;
       state.input = '';
       state.isStreaming = false;
