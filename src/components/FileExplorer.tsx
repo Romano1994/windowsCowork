@@ -91,7 +91,7 @@ const FileExplorer: React.FC = () => {
     <aside id="panel-files">
       <div className="panel-header">
         <span className="panel-label">File Explorer</span>
-        <button onClick={handleSelectFolder} title="Select folder">...</button>
+        <button onClick={handleSelectFolder} title="Select folder" style={{width: '20px'}}>...</button>
       </div>
       <div id="file-path-bar">
         <input

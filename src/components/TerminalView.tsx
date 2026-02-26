@@ -2,8 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { useAppDispatch, useAppSelector } from '../store/hooks';
-import { disconnect } from '../store/apiSlice';
+import { useAppSelector } from '../store/hooks';
 
 const CATPPUCCIN_THEME = {
   background: '#1e1e2e',
@@ -38,7 +37,6 @@ interface TerminalViewProps {
 const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const dispatch = useAppDispatch();
   const currentPath = useAppSelector((s) => s.file.currentPath);
 
   useEffect(() => {
@@ -107,7 +105,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId }) => {
     const removeExit = window.api.cli.onExit((sid: string, code: number | null) => {
       if (sid === sessionId) {
         term.write(`\r\n\x1b[33m--- Process exited (code: ${code ?? 'unknown'}) ---\x1b[0m\r\n`);
-        dispatch(disconnect());
+        // Don't auto-disconnect — let the user read the message and manually disconnect
       }
     });
 
@@ -130,7 +128,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId }) => {
         if (cancelled) return;
         if (!result.ok) {
           term.write(`\x1b[31mError: ${result.error || 'Failed to start CLI process'}\x1b[0m\r\n`);
-          dispatch(disconnect());
+          // Don't auto-disconnect — let the user read the error and manually disconnect
         } else {
           window.api.cli.resize(sessionId, term.cols, term.rows);
         }
@@ -156,7 +154,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId }) => {
       term.dispose();
       termRef.current = null;
     };
-  }, [sessionId, provider, dispatch]);
+  }, [sessionId, provider]);
 
   return <div id="terminal-container" ref={containerRef} />;
 };
