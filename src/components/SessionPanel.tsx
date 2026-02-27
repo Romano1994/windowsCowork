@@ -57,12 +57,13 @@ const SessionPanel: React.FC = () => {
 
     // 1. Save current session state
     if (activeId) {
+      const currentSession = sessions.find((s) => s.id === activeId);
       dispatch(saveCurrentState({
         messages: chat.messages,
         nextId: chat.nextId,
         tasks: task.tasks,
         taskCounter: task.counter,
-        currentPath: file.currentPath,
+        currentPath: currentSession?.path || file.currentPath,  // 세션의 저장된 경로 보존
       }));
       // Save connected status for current session (PTY stays alive)
       dispatch(saveSessionConnected({ sessionId: activeId }));

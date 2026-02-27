@@ -32,12 +32,12 @@ const CATPPUCCIN_THEME = {
 interface TerminalViewProps {
   provider: string;
   sessionId: string;
+  sessionPath?: string;  // 세션의 저장된 경로를 직접 전달
 }
 
-const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId }) => {
+const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessionPath }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const currentPath = useAppSelector((s) => s.file.currentPath);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -124,7 +124,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId }) => {
         window.api.cli.resize(sessionId, term.cols, term.rows);
       } else {
         // New process
-        const result = await window.api.cli.connect(sessionId, provider, currentPath || undefined);
+        const result = await window.api.cli.connect(sessionId, provider, sessionPath || undefined);
         if (cancelled) return;
         if (!result.ok) {
           term.write(`\x1b[31mError: ${result.error || 'Failed to start CLI process'}\x1b[0m\r\n`);
@@ -154,7 +154,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId }) => {
       term.dispose();
       termRef.current = null;
     };
-  }, [sessionId, provider]);
+  }, [sessionId, provider, sessionPath]);
 
   return <div id="terminal-container" ref={containerRef} />;
 };

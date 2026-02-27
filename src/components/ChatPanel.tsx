@@ -18,6 +18,9 @@ const ChatPanel: React.FC = () => {
   const { messages, input, isStreaming } = useAppSelector((s) => s.chat);
   const { provider, connected } = useAppSelector((s) => s.api);
   const activeSessionId = useAppSelector((s) => s.session.activeId);
+  const activeSession = useAppSelector((s) =>
+    s.session.sessions.find(session => session.id === activeSessionId)
+  );
   const selectedFile = useAppSelector((s) => s.file.selectedFile);
   const fileAlert = useAppSelector((s) => s.file.fileAlert);
   const cliMode = isCliProvider(provider) && connected;
@@ -157,7 +160,11 @@ const ChatPanel: React.FC = () => {
   return (
     <main id="panel-chat">
       {cliMode ? (
-        <TerminalView provider={provider} sessionId={activeSessionId || 'default'} />
+        <TerminalView
+          provider={provider}
+          sessionId={activeSessionId || 'default'}
+          sessionPath={activeSession?.path}
+        />
       ) : (
         <div id="chat-messages">
           {messages.map((msg) => (
