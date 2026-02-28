@@ -267,13 +267,13 @@ const FileExplorer: React.FC = () => {
    */
   return (
     <aside id="panel-files">
-      {/**
+      {/*
        * 헤더: 제목과 폴더 선택 버튼
        */}
       <div className="panel-header">
         <span className="panel-label">File Explorer</span>
 
-        {/**
+        {/*
          * 폴더 선택 버튼
          *
          * title prop은 마우스 오버 시 툴팁을 표시합니다.
@@ -281,11 +281,11 @@ const FileExplorer: React.FC = () => {
         <button onClick={handleSelectFolder} title="Select folder" style={{width: '20px'}}>...</button>
       </div>
 
-      {/**
+      {/*
        * 경로 입력 바
        */}
       <div id="file-path-bar">
-        {/**
+        {/*
          * 경로 입력 필드
          *
          * onKeyDown에서 화살표 함수와 단축 평가를 사용합니다:
@@ -303,26 +303,26 @@ const FileExplorer: React.FC = () => {
           placeholder="Path..."
         />
 
-        {/**
+        {/*
          * Go 버튼
          */}
         <button id="btn-go-path" onClick={handlePathSubmit}>Go</button>
       </div>
 
-      {/**
+      {/*
        * 상위 디렉토리 이동 버튼
        */}
       <div id="btn-parent-row">
         <button id="btn-parent" onClick={goParent}>.. (Parent)</button>
       </div>
 
-      {/**
+      {/*
        * 파일/폴더 목록
        *
        * ul은 unordered list (순서 없는 목록)입니다.
        */}
       <ul id="file-list">
-        {/**
+        {/*
          * 에러 메시지 표시
          *
          * CSS 변수 사용: var(--red)
@@ -330,7 +330,7 @@ const FileExplorer: React.FC = () => {
          */}
         {error && <li style={{ color: 'var(--red)', padding: 10 }}>{error}</li>}
 
-        {/**
+        {/*
          * 파일/폴더 항목 렌더링
          *
          * map으로 각 entry를 li 요소로 변환합니다.
@@ -355,7 +355,7 @@ const FileExplorer: React.FC = () => {
             onClick={() => handleEntryClick(entry)}
             onDoubleClick={() => handleEntryDoubleClick(entry)}
           >
-            {/**
+            {/*
              * 파일/폴더 아이콘
              *
              * Unicode 이모지 사용:
@@ -366,7 +366,7 @@ const FileExplorer: React.FC = () => {
               {entry.isDirectory ? '\u{1F4C1}' : '\u{1F4C4}'}
             </span>
 
-            {/**
+            {/*
              * 파일/폴더 이름
              */}
             <span className="file-name">{entry.name}</span>

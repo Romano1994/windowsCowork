@@ -381,7 +381,7 @@ const ChatPanel: React.FC = () => {
    */
   return (
     <main id="panel-chat">
-      {/**
+      {/*
        * 조건부 렌더링
        *
        * {condition ? <A /> : <B />}
@@ -411,7 +411,7 @@ const ChatPanel: React.FC = () => {
          * 채팅 모드: 메시지 목록 표시
          */
         <div id="chat-messages">
-          {/**
+          {/*
            * map은 배열의 각 요소를 변환합니다.
            * messages.map(msg => <JSX>) → 각 메시지를 JSX로 변환
            *
@@ -429,7 +429,7 @@ const ChatPanel: React.FC = () => {
             </div>
           ))}
 
-          {/**
+          {/*
            * 스크롤 앵커
            * ref로 DOM 요소를 참조하여 scrollIntoView할 수 있게 합니다.
            */}
@@ -437,7 +437,7 @@ const ChatPanel: React.FC = () => {
         </div>
       )}
 
-      {/**
+      {/*
        * 파일 경고 메시지 표시
        *
        * {condition && <JSX>}는 조건부 렌더링의 또 다른 방법입니다.
@@ -448,7 +448,7 @@ const ChatPanel: React.FC = () => {
         <div id="chat-file-alert">{fileAlert}</div>
       )}
 
-      {/**
+      {/*
        * 선택된 파일 표시
        *
        * style prop은 인라인 스타일을 지정합니다.
@@ -463,7 +463,7 @@ const ChatPanel: React.FC = () => {
         <div style={{display: 'flex'}}>
           <div id="chat-selected-file">{selectedFile}</div>
 
-          {/**
+          {/*
            * onClick prop은 클릭 이벤트 핸들러입니다.
            * 함수를 전달하면 클릭 시 해당 함수가 실행됩니다.
            */}
@@ -471,12 +471,12 @@ const ChatPanel: React.FC = () => {
         </div>
       )}
 
-      {/**
+      {/*
        * 입력 영역 (채팅 모드에서만 표시)
        */}
       {!cliMode && (
         <div id="chat-input-area">
-          {/**
+          {/*
            * textarea - 다중 행 입력 필드
            *
            * props:
@@ -506,7 +506,7 @@ const ChatPanel: React.FC = () => {
             rows={2}
           />
 
-          {/**
+          {/*
            * button - 전송 버튼
            *
            * disabled prop이 true면 버튼이 비활성화됩니다.
