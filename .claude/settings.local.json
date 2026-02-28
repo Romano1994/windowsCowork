@@ -33,7 +33,10 @@
       "Bash(cmd /C \"rmdir /S /Q C:\\\\FreiCowork\\\\.webpack 2>nul & echo Cleaned\")",
       "Bash(cmd /C \"taskkill /PID 17912 /F\")",
       "Bash(cmd /C \"taskkill /PID 17912 /T /F\")",
-      "Bash(npm run make:*)"
+      "Bash(npm run make:*)",
+      "Bash(git push:*)",
+      "WebFetch(domain:www.warp.dev)",
+      "WebSearch"
     ]
   }
 }

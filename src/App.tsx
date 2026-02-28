@@ -41,41 +41,13 @@ const App: React.FC = () => {
    * 4. 카멜케이스로 속성을 작성합니다 (onclick → onClick)
    */
   return (
-    /**
-     * 최상위 div - 전체 앱 컨테이너
-     * id는 CSS 선택자로 사용됩니다 (#app)
-     */
     <div id="app">
-      {/*
-       * header - 타이틀바
-       * Electron 앱의 제목을 표시합니다
-       *
-       * JSX 안에서 주석은 {/* ... */} 형태로 작성합니다
-       */}
       <header id="titlebar">
         <span className="titlebar-title">FreiCowork</span>
       </header>
-
-      {/*
-       * main-layout - 메인 레이아웃 컨테이너
-       * 3열 레이아웃: FileExplorer | ChatPanel | panel-right
-       */}
       <div id="main-layout">
-        {/*
-         * 왼쪽 패널: 파일 탐색기
-         * 자체 닫힘 태그 (self-closing tag) 사용
-         */}
         <FileExplorer />
-
-        {/*
-         * 중앙 패널: 채팅 또는 터미널
-         */}
         <ChatPanel />
-
-        {/*
-         * 오른쪽 패널: 세션과 API 설정
-         * 세로로 2개 패널을 배치합니다
-         */}
         <div id="panel-right">
           {/* 세션 관리 패널 */}
           <SessionPanel />

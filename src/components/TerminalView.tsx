@@ -75,6 +75,14 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
   const containerRef = useRef<HTMLDivElement>(null);  // 터미널을 렌더링할 div
   const termRef = useRef<Terminal | null>(null);       // xterm.js 인스턴스
 
+  /**
+   * 출력 버퍼링을 위한 상태
+   * 작은 청크들을 모아서 한번에 렌더링하여 무한 스크롤 방지
+   */
+  const outputBufferRef = useRef<string>('');
+  const writeTimeoutRef = useRef<number | null>(null);
+  const rafIdRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (!containerRef.current) return;
     const container = containerRef.current;
@@ -131,10 +139,49 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       window.api.cli.resize(sessionId, cols, rows);
     });
 
+    /**
+     * 버퍼링된 출력을 터미널에 쓰는 함수
+     * requestAnimationFrame을 사용하여 렌더링 최적화
+     */
+    const flushBuffer = () => {
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+
+      rafIdRef.current = requestAnimationFrame(() => {
+        if (outputBufferRef.current && termRef.current && !cancelled) {
+          const bufferedData = outputBufferRef.current;
+          outputBufferRef.current = '';
+
+          // 터미널에 쓰고 스크롤을 맨 아래로 고정
+          termRef.current.write(bufferedData, () => {
+            // 쓰기 완료 후 스크롤을 맨 아래로
+            if (termRef.current) {
+              termRef.current.scrollToBottom();
+            }
+          });
+        }
+        rafIdRef.current = null;
+      });
+    };
+
     // Receive output from CLI process (filter by sessionId)
     const removeOutput = window.api.cli.onOutput((sid: string, data: string) => {
-      if (sid === sessionId) {
-        term.write(data);
+      if (sid === sessionId && !cancelled) {
+        // 버퍼에 데이터 추가
+        outputBufferRef.current += data;
+
+        // 기존 타이머가 있으면 취소
+        if (writeTimeoutRef.current !== null) {
+          clearTimeout(writeTimeoutRef.current);
+        }
+
+        // 짧은 지연 후 버퍼 flush (디바운싱)
+        // AI 스트리밍 시 작은 청크들을 모아서 한번에 처리
+        writeTimeoutRef.current = window.setTimeout(() => {
+          flushBuffer();
+          writeTimeoutRef.current = null;
+        }, 16); // ~60fps (1000ms / 60 ≈ 16ms)
       }
     });
 
@@ -175,13 +222,43 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     const handleClick = () => term.focus();
     container.addEventListener('click', handleClick);
 
+    /**
+     * 터미널 크기 조정 디바운싱
+     * ResizeObserver가 너무 자주 호출되어 렌더링과 충돌하는 것을 방지
+     */
+    let resizeTimeout: number | null = null;
     const observer = new ResizeObserver(() => {
-      fitAddon.fit();
+      if (resizeTimeout !== null) {
+        clearTimeout(resizeTimeout);
+      }
+      resizeTimeout = window.setTimeout(() => {
+        if (!cancelled && termRef.current) {
+          fitAddon.fit();
+        }
+        resizeTimeout = null;
+      }, 100); // 100ms 디바운스
     });
     observer.observe(container);
 
     return () => {
       cancelled = true;
+
+      // 타이머와 애니메이션 프레임 정리
+      if (writeTimeoutRef.current !== null) {
+        clearTimeout(writeTimeoutRef.current);
+        writeTimeoutRef.current = null;
+      }
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+
+      // 남은 버퍼 flush
+      if (outputBufferRef.current && termRef.current) {
+        termRef.current.write(outputBufferRef.current);
+        outputBufferRef.current = '';
+      }
+
       observer.disconnect();
       container.removeEventListener('click', handleClick);
       removeOutput();
