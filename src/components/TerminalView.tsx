@@ -105,10 +105,11 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     termRef.current = term;
 
     // Ctrl+C: copy selection (if any), otherwise pass through as SIGINT
-    // Ctrl+V: paste from clipboard into PTY
+    // Ctrl+V / Shift+Insert: paste from clipboard
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
 
+      // 복사
       if (event.ctrlKey && event.key === 'c') {
         const sel = term.getSelection();
         if (sel) {
@@ -119,10 +120,18 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         return true;
       }
 
-      if (event.ctrlKey && event.key === 'v') {
-        navigator.clipboard.readText().then((text) => {
-          if (text) window.api.cli.send(sessionId, text);
-        });
+      // 붙여넣기 (Ctrl+V 또는 Shift+Insert)
+      if ((event.ctrlKey && event.key === 'v') || (event.shiftKey && event.key === 'Insert')) {
+        event.preventDefault();
+        navigator.clipboard.readText()
+          .then((text) => {
+            if (text) {
+              window.api.cli.send(sessionId, text);
+            }
+          })
+          .catch((err) => {
+            console.error('Failed to read clipboard:', err);
+          });
         return false;
       }
 
