@@ -160,6 +160,15 @@ const chatSlice = createSlice({
     setStreaming(state, action: PayloadAction<boolean>) {
       state.isStreaming = action.payload;
     },
+    updateSystemMessage(state, action: PayloadAction<string>) {
+      const msg = state.messages.find((m) => m.type === 'system' && m.id === 0);
+      if (msg) {
+        msg.text = action.payload;
+      } else {
+        state.messages.unshift({ id: 0, type: 'system', text: action.payload });
+        if (state.nextId <= 0) state.nextId = 1;
+      }
+    },
 
     /**
      * restoreMessages - 메시지 복원
@@ -196,6 +205,7 @@ export const {
   updateMessageText,
   removeEmptyMessage,
   setStreaming,
+  updateSystemMessage,
   restoreMessages,
 } = chatSlice.actions;
 

@@ -16,6 +16,7 @@ import {
   setProvider, setModel, setApiKey, setConnected, disconnect,
   MODELS, Provider, isCliProvider,
 } from '../store/apiSlice';
+import { updateSystemMessage } from '../store/chatSlice';
 
 /**
  * PROVIDER_LABELS - 제공자별 표시 이름
@@ -61,6 +62,12 @@ const ApiPanel: React.FC = () => {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (connected && !isCliProvider(provider)) {
+      dispatch(updateSystemMessage('연결이 완료됐습니다. 무엇을 도와드릴까요?'));
+    }
+  }, [connected, provider, dispatch]);
+
   /**
    * handleProviderChange - AI 제공자 변경 핸들러
    *
@@ -95,6 +102,9 @@ const ApiPanel: React.FC = () => {
     setLoading(false);
     if (result.ok) {
       dispatch(setConnected(true));
+      if (!isCliProvider(provider)) {
+        dispatch(updateSystemMessage('연결이 완료됐습니다. 무엇을 도와드릴까요?'));
+      }
     } else {
       setError(result.error || 'Connection failed');
     }

@@ -11,7 +11,7 @@ import React, { useEffect, useCallback } from 'react';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { setDirectory, setInputPath, setSelectedFile, setFileAlert, setError } from '../store/fileSlice';
 import { removeWelcome } from '../store/chatSlice';
-import { isCliProvider } from '../store/apiSlice';
+import { isCliProvider, disconnect } from '../store/apiSlice';
 
 /**
  * 지원하는 파일 확장자 정의
@@ -210,6 +210,9 @@ const FileExplorer: React.FC = () => {
       // 파일 선택
       dispatch(setSelectedFile(entry.name));
       dispatch(removeWelcome());  // 환영 메시지 제거
+      if (cliMode) {
+        dispatch(disconnect());
+      }
     }
   };
 

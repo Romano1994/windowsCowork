@@ -94,6 +94,7 @@ const ChatPanel: React.FC = () => {
    * null로 초기화하고, JSX에서 ref={messagesEndRef}로 연결합니다.
    */
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   /**
    * streamTextRef - 스트리밍 중인 텍스트를 임시 저장
@@ -130,6 +131,12 @@ const ChatPanel: React.FC = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);  // messages가 변경되면 실행
+
+  useEffect(() => {
+    if (!cliMode && selectedFile) {
+      inputRef.current?.focus();
+    }
+  }, [cliMode, selectedFile]);
 
   /**
    * Stream listeners 설정
@@ -492,6 +499,7 @@ const ChatPanel: React.FC = () => {
            */}
           <textarea
             id="chat-input"
+            ref={inputRef}
             value={input}
             onChange={(e) => {
               /**
