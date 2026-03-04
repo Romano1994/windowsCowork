@@ -16,7 +16,8 @@ import React, { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';  // 터미널 라이브러리
 import { FitAddon } from '@xterm/addon-fit';  // 자동 크기 조정 애드온
 import '@xterm/xterm/css/xterm.css';  // 터미널 스타일
-import { useAppSelector } from '../store/hooks';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import { disconnect } from '../store/apiSlice';
 
 /**
  * CATPPUCCIN_THEME - 터미널 색상 테마
@@ -70,6 +71,11 @@ interface TerminalViewProps {
  */
 const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessionPath }) => {
   /**
+   * Redux dispatch hook
+   */
+  const dispatch = useAppDispatch();
+
+  /**
    * useRef로 DOM과 터미널 인스턴스 참조
    */
   const containerRef = useRef<HTMLDivElement>(null);  // 터미널을 렌더링할 div
@@ -82,6 +88,21 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
   const outputBufferRef = useRef<string>('');
   const writeTimeoutRef = useRef<number | null>(null);
   const rafIdRef = useRef<number | null>(null);
+  const firstBufferedAtRef = useRef<number>(0);
+
+  /**
+   * 스크롤 상태 추적
+   * 사용자가 수동으로 스크롤을 올린 경우 자동 스크롤 비활성화
+   */
+  const userScrolledUpRef = useRef<boolean>(false);
+  const userScrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  /**
+   * 출력 속도 제한 (rate limiting)
+   * 고속 스크롤 방지를 위한 출력 속도 제어
+   */
+  const lastWriteTimeRef = useRef<number>(0);
+  const pendingWritesRef = useRef<number>(0);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -93,6 +114,9 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
       fontSize: 14,
       cursorBlink: true,
+      // 스크롤백 버퍼 제한으로 메모리 사용량 및 렌더링 성능 개선
+      // 1000줄로 제한하여 고속 스크롤 및 메모리 문제 방지
+      scrollback: 1000,
     });
 
     const fitAddon = new FitAddon();
@@ -126,7 +150,23 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         navigator.clipboard.readText()
           .then((text) => {
             if (text) {
-              window.api.cli.send(sessionId, text);
+              // 대량 텍스트 붙여넣기 시 청크로 나누어 전송 (스크롤 점프 방지)
+              const CHUNK_SIZE = 1000; // 1000자씩 전송
+              if (text.length > CHUNK_SIZE) {
+                let offset = 0;
+                const sendChunk = () => {
+                  if (offset < text.length) {
+                    const chunk = text.slice(offset, offset + CHUNK_SIZE);
+                    window.api.cli.send(sessionId, chunk);
+                    offset += CHUNK_SIZE;
+                    // 다음 청크를 짧은 지연 후 전송 (버퍼 오버플로우 방지)
+                    setTimeout(sendChunk, 10);
+                  }
+                };
+                sendChunk();
+              } else {
+                window.api.cli.send(sessionId, text);
+              }
             }
           })
           .catch((err) => {
@@ -149,8 +189,33 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     });
 
     /**
+     * 사용자가 수동으로 스크롤했는지 감지
+     * DOM 기반 스크롤 위치 추적으로 더 정확한 감지
+     */
+    const checkUserScroll = () => {
+      if (!termRef.current) return;
+
+      try {
+        const buffer = termRef.current.buffer.active;
+        // 버퍼의 최대 줄 수 - 표시되는 줄 수 = 스크롤 가능한 범위
+        // cursorY: 커서가 있는 줄의 상대 위치
+        const maxScroll = buffer.length - termRef.current.rows;
+        // 현재 스크롤 위치 추정: 커서 위치 - 현재 뷰포트 위치
+        const currentScroll = Math.max(0, buffer.length - termRef.current.rows - buffer.cursorY);
+
+        // 스크롤이 맨 아래에서 5줄 이내면 "맨 아래"로 간주
+        const isAtBottom = currentScroll < 5;
+        userScrolledUpRef.current = !isAtBottom;
+      } catch (e) {
+        // 버퍼 API 접근 실패 시 안전하게 처리
+        userScrolledUpRef.current = false;
+      }
+    };
+
+    /**
      * 버퍼링된 출력을 터미널에 쓰는 함수
      * requestAnimationFrame을 사용하여 렌더링 최적화
+     * 스마트 스크롤: 사용자가 스크롤을 올린 경우 자동 스크롤하지 않음
      */
     const flushBuffer = () => {
       if (rafIdRef.current) {
@@ -159,16 +224,53 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
       rafIdRef.current = requestAnimationFrame(() => {
         if (outputBufferRef.current && termRef.current && !cancelled) {
+          const now = Date.now();
+          const bufferSize = outputBufferRef.current.length;
+
+          // 동적 throttle: 버퍼 크기에 따라 조정
+          // 큰 버퍼는 더 오래 대기 (스크롤 안정성 향상)
+          // Codex는 실시간 진행 상태(think/edit)가 자주 갱신되므로 더 공격적으로 flush
+          let minInterval = provider === 'codex' ? 4 : 8;
+          if (bufferSize > 10000) minInterval = provider === 'codex' ? 8 : 16;
+          if (bufferSize > 50000) minInterval = provider === 'codex' ? 16 : 32;
+          if (bufferSize > 100000) minInterval = provider === 'codex' ? 24 : 64;
+
+          if (now - lastWriteTimeRef.current < minInterval) {
+            pendingWritesRef.current++;
+            // 과도한 pending writes 방지
+            if (pendingWritesRef.current > 50 && bufferSize > 50000) {
+              const maxBufferSize = 100000; // 100KB
+              if (outputBufferRef.current.length > maxBufferSize) {
+                outputBufferRef.current = outputBufferRef.current.slice(-maxBufferSize);
+              }
+            }
+            // 다음 프레임에 다시 시도
+            rafIdRef.current = requestAnimationFrame(() => flushBuffer());
+            return;
+          }
+
           const bufferedData = outputBufferRef.current;
           outputBufferRef.current = '';
+          firstBufferedAtRef.current = 0;
+          pendingWritesRef.current = 0;
+          lastWriteTimeRef.current = now;
 
-          // 터미널에 쓰고 스크롤을 맨 아래로 고정
-          termRef.current.write(bufferedData, () => {
-            // 쓰기 완료 후 스크롤을 맨 아래로
-            if (termRef.current) {
-              termRef.current.scrollToBottom();
-            }
-          });
+          // 쓰기 전에 현재 스크롤 상태 확인
+          checkUserScroll();
+          const shouldAutoScroll = !userScrolledUpRef.current;
+
+          // 터미널에 데이터 쓰기
+          termRef.current.write(bufferedData);
+
+          // 자동 스크롤이 활성화된 경우에만 맨 아래로 스크롤
+          if (shouldAutoScroll) {
+            // 약간의 지연을 두고 스크롤 (DOM 업데이트 후)
+            setTimeout(() => {
+              if (termRef.current && !cancelled && shouldAutoScroll) {
+                termRef.current.scrollToBottom();
+              }
+            }, 0);
+          }
         }
         rafIdRef.current = null;
       });
@@ -179,25 +281,54 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       if (sid === sessionId && !cancelled) {
         // 버퍼에 데이터 추가
         outputBufferRef.current += data;
-
-        // 기존 타이머가 있으면 취소
-        if (writeTimeoutRef.current !== null) {
-          clearTimeout(writeTimeoutRef.current);
+        if (firstBufferedAtRef.current === 0) {
+          firstBufferedAtRef.current = Date.now();
         }
 
-        // 짧은 지연 후 버퍼 flush (디바운싱)
-        // AI 스트리밍 시 작은 청크들을 모아서 한번에 처리
-        writeTimeoutRef.current = window.setTimeout(() => {
+        // 짧은 지연 후 버퍼 flush
+        // 기존 타이머를 매번 취소하지 않고, 최초 이벤트 기준으로 flush를 보장해
+        // 고빈도 스트림에서 "무한 지연"이 발생하지 않도록 함
+        let debounceTime = provider === 'codex' ? 8 : 16;
+        const bufLen = outputBufferRef.current.length;
+        if (bufLen > 5000) debounceTime = provider === 'codex' ? 24 : 64;
+        else if (bufLen > 2000) debounceTime = provider === 'codex' ? 16 : 48;
+        else if (bufLen > 1000) debounceTime = provider === 'codex' ? 12 : 32;
+
+        const hasInteractiveControl =
+          data.includes('\r') ||
+          data.includes('\x1b[2K') ||
+          data.includes('\x1b[1A') ||
+          data.includes('\x1b[?25');
+
+        // 스피너/진행 표시와 같이 제어문자가 포함된 청크는 즉시 반영
+        if (hasInteractiveControl) {
+          if (writeTimeoutRef.current !== null) {
+            clearTimeout(writeTimeoutRef.current);
+            writeTimeoutRef.current = null;
+          }
           flushBuffer();
+          return;
+        }
+
+        if (writeTimeoutRef.current === null) {
+          writeTimeoutRef.current = window.setTimeout(() => {
+            flushBuffer();
+            writeTimeoutRef.current = null;
+          }, debounceTime);
+        } else if (Date.now() - firstBufferedAtRef.current > 80) {
+          // 장시간 누적 방지: 최대 지연을 넘기면 강제 flush
+          clearTimeout(writeTimeoutRef.current);
           writeTimeoutRef.current = null;
-        }, 16); // ~60fps (1000ms / 60 ≈ 16ms)
+          flushBuffer();
+        }
       }
     });
 
     const removeExit = window.api.cli.onExit((sid: string, code: number | null) => {
       if (sid === sessionId) {
         term.write(`\r\n\x1b[33m--- Process exited (code: ${code ?? 'unknown'}) ---\x1b[0m\r\n`);
-        // Don't auto-disconnect — let the user read the message and manually disconnect
+        // Auto-disconnect to sync UI state with actual PTY state
+        dispatch(disconnect());
       }
     });
 
@@ -231,21 +362,85 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     const handleClick = () => term.focus();
     container.addEventListener('click', handleClick);
 
+    // 마우스 휠/스크롤 이벤트로 사용자 스크롤 감지
+    const handleWheel = () => {
+      checkUserScroll();
+      // 사용자가 스크롤한 후 1초 동안은 자동 스크롤 비활성화
+      if (userScrolledUpRef.current) {
+        if (userScrollTimeoutRef.current) {
+          clearTimeout(userScrollTimeoutRef.current);
+        }
+        userScrollTimeoutRef.current = setTimeout(() => {
+          // 1초 후: 사용자가 계속 스크롤을 올린 상태면 유지, 아니면 자동 스크롤 재활성화
+          checkUserScroll();
+          userScrollTimeoutRef.current = null;
+        }, 1000);
+      }
+    };
+    container.addEventListener('wheel', handleWheel, { passive: true });
+
+    // 키보드 스크롤 이벤트 감지 (Page Up/Down, Arrow Up/Down)
+    const handleKeyScroll = (e: KeyboardEvent) => {
+      if (['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) {
+        // 키보드 스크롤 직후 상태 확인
+        setTimeout(() => {
+          checkUserScroll();
+          // 키보드 스크롤도 1초 동안 자동 스크롤 비활성화
+          if (userScrolledUpRef.current) {
+            if (userScrollTimeoutRef.current) {
+              clearTimeout(userScrollTimeoutRef.current);
+            }
+            userScrollTimeoutRef.current = setTimeout(() => {
+              checkUserScroll();
+              userScrollTimeoutRef.current = null;
+            }, 1000);
+          }
+        }, 50);
+      }
+    };
+    container.addEventListener('keydown', handleKeyScroll);
+
     /**
      * 터미널 크기 조정 디바운싱
      * ResizeObserver가 너무 자주 호출되어 렌더링과 충돌하는 것을 방지
      */
     let resizeTimeout: number | null = null;
+    let lastResizeTime = 0;
     const observer = new ResizeObserver(() => {
+      const now = Date.now();
+      // 과도한 resize 이벤트 필터링 (최소 100ms 간격)
+      if (now - lastResizeTime < 100) {
+        return;
+      }
+      lastResizeTime = now;
+
       if (resizeTimeout !== null) {
         clearTimeout(resizeTimeout);
       }
       resizeTimeout = window.setTimeout(() => {
         if (!cancelled && termRef.current) {
-          fitAddon.fit();
+          try {
+            // resize 전 스크롤 상태 저장
+            checkUserScroll();
+            const wasAtBottom = !userScrolledUpRef.current;
+
+            fitAddon.fit();
+
+            // resize 후 스크롤 위치 복원
+            if (wasAtBottom && termRef.current) {
+              // setTimeout으로 DOM 업데이트 후 스크롤
+              setTimeout(() => {
+                if (termRef.current) {
+                  termRef.current.scrollToBottom();
+                }
+              }, 0);
+            }
+          } catch (e) {
+            console.error('Terminal resize error:', e);
+          }
         }
         resizeTimeout = null;
-      }, 100); // 100ms 디바운스
+      }, 150); // 150ms 디바운스
     });
     observer.observe(container);
 
@@ -256,6 +451,10 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       if (writeTimeoutRef.current !== null) {
         clearTimeout(writeTimeoutRef.current);
         writeTimeoutRef.current = null;
+      }
+      if (userScrollTimeoutRef.current !== null) {
+        clearTimeout(userScrollTimeoutRef.current);
+        userScrollTimeoutRef.current = null;
       }
       if (rafIdRef.current !== null) {
         cancelAnimationFrame(rafIdRef.current);
@@ -270,6 +469,8 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
       observer.disconnect();
       container.removeEventListener('click', handleClick);
+      container.removeEventListener('wheel', handleWheel);
+      container.removeEventListener('keydown', handleKeyScroll);
       removeOutput();
       removeExit();
       // Do NOT kill the PTY — just detach listeners and dispose xterm
@@ -278,7 +479,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     };
   }, [sessionId, provider, sessionPath]);
 
-  return <div id="terminal-container" ref={containerRef} />;
+  return <div id="terminal-container" style={{marginBottom: '10px'}} ref={containerRef} />;
 };
 
 export default TerminalView;

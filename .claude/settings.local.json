@@ -36,7 +36,8 @@
       "Bash(npm run make:*)",
       "Bash(git push:*)",
       "WebFetch(domain:www.warp.dev)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(npm run lint:*)"
     ]
   }
 }
