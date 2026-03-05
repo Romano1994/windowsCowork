@@ -12,12 +12,11 @@
  * - useRef: DOM 참조나 렌더링 간 유지되는 값 저장
  * - useCallback: 함수 메모이제이션 (불필요한 재생성 방지)
  */
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 
 // Redux hooks와 액션들을 import
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
-  setInput,
   addMessageWithId,
   updateMessageText,
   removeEmptyMessage,
@@ -51,9 +50,16 @@ const ChatPanel: React.FC = () => {
    * 구조 분해 할당(destructuring)으로 여러 값을 한 번에 가져옵니다:
    * const { a, b } = { a: 1, b: 2 } → const a = 1, b = 2
    */
-  const { messages, input, isStreaming } = useAppSelector((s) => s.chat);
+  const { messages, isStreaming } = useAppSelector((s) => s.chat);
   const { provider, connected } = useAppSelector((s) => s.api);
   const activeSessionId = useAppSelector((s) => s.session.activeId);
+
+  /**
+   * 로컬 입력 상태
+   * Redux 대신 로컬 useState를 사용하여 타이핑 성능 개선
+   * 타이핑할 때마다 전역 상태를 업데이트하지 않아 리렌더링 방지
+   */
+  const [input, setInput] = useState('');
 
   /**
    * find는 배열에서 조건을 만족하는 첫 번째 요소를 반환합니다.
@@ -139,6 +145,14 @@ const ChatPanel: React.FC = () => {
   }, [cliMode, selectedFile]);
 
   /**
+   * 세션 전환 시 입력창 초기화
+   * 다른 세션으로 전환하면 입력 중이던 텍스트를 초기화합니다.
+   */
+  useEffect(() => {
+    setInput('');
+  }, [activeSessionId]);
+
+  /**
    * Stream listeners 설정
    *
    * 이 useEffect는 컴포넌트가 마운트될 때 한 번만 실행됩니다.
@@ -199,7 +213,7 @@ const ChatPanel: React.FC = () => {
      */
     if (cliMode) {
       window.api.cli.send(activeSessionId || 'default', text + '\n');
-      dispatch(setInput(''));  // 입력 필드 초기화
+      setInput('');  // 입력 필드 초기화
       return;  // Early return
     }
 
@@ -207,7 +221,7 @@ const ChatPanel: React.FC = () => {
     if (isStreaming) return;
 
     // 상태 초기화
-    dispatch(setInput(''));
+    setInput('');
     dispatch(setStreaming(true));
     if (fileAlert) dispatch(clearFileAlert());
 
@@ -505,10 +519,12 @@ const ChatPanel: React.FC = () => {
               /**
                * onChange는 인라인 화살표 함수를 사용합니다.
                * e.target.value는 입력된 값입니다.
+               * 로컬 상태만 업데이트하여 타이핑 성능 개선
                */
               if (fileAlert) dispatch(clearFileAlert());
-              dispatch(setInput(e.target.value));
+              setInput(e.target.value);
             }}
+            onFocus={scrollToBottom}
             onKeyDown={handleKeyDown}
             placeholder="Enter message..."
             rows={2}
