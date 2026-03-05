@@ -128,6 +128,28 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
     termRef.current = term;
 
+    // 비정상적인 스크롤 점프 감지 및 복구
+    // 일정 간격으로 스크롤 상태를 확인하여 비정상 스크롤 감지
+    const scrollWatchInterval = setInterval(() => {
+      if (!termRef.current || cancelled) return;
+
+      try {
+        const buffer = termRef.current.buffer.active;
+        const viewportY = buffer.viewportY;
+        const baseY = buffer.baseY;
+
+        // 비정상적으로 맨 위로 스크롤된 경우 감지
+        // (사용자가 의도적으로 스크롤하지 않은 경우)
+        if (viewportY === 0 && baseY > 10 && !userScrolledUpRef.current) {
+          // 비정상 스크롤 감지: 자동으로 맨 아래로 복구
+          console.warn('Abnormal scroll detected, auto-recovering to bottom');
+          termRef.current.scrollToBottom();
+        }
+      } catch (e) {
+        // 무시
+      }
+    }, 200); // 200ms마다 체크
+
     // Ctrl+C: copy selection (if any), otherwise pass through as SIGINT
     // Ctrl+V / Shift+Insert: paste from clipboard
     term.attachCustomKeyEventHandler((event) => {
@@ -190,21 +212,22 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
     /**
      * 사용자가 수동으로 스크롤했는지 감지
-     * DOM 기반 스크롤 위치 추적으로 더 정확한 감지
+     * xterm.js API를 정확히 사용하여 viewport 위치 추적
      */
     const checkUserScroll = () => {
       if (!termRef.current) return;
 
       try {
         const buffer = termRef.current.buffer.active;
-        // 버퍼의 최대 줄 수 - 표시되는 줄 수 = 스크롤 가능한 범위
-        // cursorY: 커서가 있는 줄의 상대 위치
-        const maxScroll = buffer.length - termRef.current.rows;
-        // 현재 스크롤 위치 추정: 커서 위치 - 현재 뷰포트 위치
-        const currentScroll = Math.max(0, buffer.length - termRef.current.rows - buffer.cursorY);
+        // viewportY: 현재 viewport가 보고 있는 줄 번호 (0-based)
+        // baseY: 버퍼에서 스크롤 가능한 최상단 줄 번호
+        // baseY + rows: 버퍼의 최하단 (현재 커서 위치)
+        const viewportY = buffer.viewportY;
+        const baseY = buffer.baseY;
 
-        // 스크롤이 맨 아래에서 5줄 이내면 "맨 아래"로 간주
-        const isAtBottom = currentScroll < 5;
+        // 맨 아래에 있으려면: viewportY가 baseY와 같거나 가까워야 함
+        // 여유를 두고 2줄 이내면 "맨 아래"로 간주
+        const isAtBottom = (baseY - viewportY) <= 2;
         userScrolledUpRef.current = !isAtBottom;
       } catch (e) {
         // 버퍼 API 접근 실패 시 안전하게 처리
@@ -259,18 +282,26 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
           checkUserScroll();
           const shouldAutoScroll = !userScrolledUpRef.current;
 
-          // 터미널에 데이터 쓰기
-          termRef.current.write(bufferedData);
+          // 터미널에 데이터 쓰기 (콜백으로 스크롤 처리)
+          termRef.current.write(bufferedData, () => {
+            // 자동 스크롤이 활성화된 경우에만 맨 아래로 스크롤
+            if (shouldAutoScroll && termRef.current && !cancelled) {
+              try {
+                // 스크롤 전에 다시 한 번 확인 (쓰기 중 사용자가 스크롤했을 수 있음)
+                const buffer = termRef.current.buffer.active;
+                const viewportY = buffer.viewportY;
+                const baseY = buffer.baseY;
+                const stillAtBottom = (baseY - viewportY) <= 2;
 
-          // 자동 스크롤이 활성화된 경우에만 맨 아래로 스크롤
-          if (shouldAutoScroll) {
-            // 약간의 지연을 두고 스크롤 (DOM 업데이트 후)
-            setTimeout(() => {
-              if (termRef.current && !cancelled && shouldAutoScroll) {
+                if (stillAtBottom) {
+                  termRef.current.scrollToBottom();
+                }
+              } catch (e) {
+                // 에러 발생 시 안전하게 스크롤
                 termRef.current.scrollToBottom();
               }
-            }, 0);
-          }
+            }
+          });
         }
         rafIdRef.current = null;
       });
@@ -363,29 +394,47 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     container.addEventListener('click', handleClick);
 
     // 마우스 휠/스크롤 이벤트로 사용자 스크롤 감지
-    const handleWheel = () => {
+    const handleWheel = (e: WheelEvent) => {
       checkUserScroll();
-      // 사용자가 스크롤한 후 1초 동안은 자동 스크롤 비활성화
-      if (userScrolledUpRef.current) {
+      // 아래로 스크롤(deltaY > 0)하여 맨 아래로 왔으면 자동 스크롤 재활성화
+      if (e.deltaY > 0 && !userScrolledUpRef.current) {
+        // 타이머 취소 (이미 맨 아래에 있음)
+        if (userScrollTimeoutRef.current) {
+          clearTimeout(userScrollTimeoutRef.current);
+          userScrollTimeoutRef.current = null;
+        }
+      }
+      // 사용자가 스크롤을 올린 경우 500ms 후 재확인
+      else if (userScrolledUpRef.current) {
         if (userScrollTimeoutRef.current) {
           clearTimeout(userScrollTimeoutRef.current);
         }
         userScrollTimeoutRef.current = setTimeout(() => {
-          // 1초 후: 사용자가 계속 스크롤을 올린 상태면 유지, 아니면 자동 스크롤 재활성화
           checkUserScroll();
           userScrollTimeoutRef.current = null;
-        }, 1000);
+        }, 500); // 1초에서 500ms로 단축
       }
     };
     container.addEventListener('wheel', handleWheel, { passive: true });
 
-    // 키보드 스크롤 이벤트 감지 (Page Up/Down, Arrow Up/Down)
+    // 키보드 스크롤 이벤트 감지 (Page Up/Down, Arrow Up/Down, Home/End)
     const handleKeyScroll = (e: KeyboardEvent) => {
       if (['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) {
-        // 키보드 스크롤 직후 상태 확인
+        // End 키: 맨 아래로 이동 → 자동 스크롤 즉시 재활성화
+        if (e.key === 'End') {
+          setTimeout(() => {
+            checkUserScroll();
+            if (!userScrolledUpRef.current && userScrollTimeoutRef.current) {
+              clearTimeout(userScrollTimeoutRef.current);
+              userScrollTimeoutRef.current = null;
+            }
+          }, 50);
+          return;
+        }
+
+        // 다른 키: 스크롤 후 상태 확인
         setTimeout(() => {
           checkUserScroll();
-          // 키보드 스크롤도 1초 동안 자동 스크롤 비활성화
           if (userScrolledUpRef.current) {
             if (userScrollTimeoutRef.current) {
               clearTimeout(userScrollTimeoutRef.current);
@@ -393,7 +442,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
             userScrollTimeoutRef.current = setTimeout(() => {
               checkUserScroll();
               userScrollTimeoutRef.current = null;
-            }, 1000);
+            }, 500);
           }
         }, 50);
       }
@@ -420,20 +469,27 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       resizeTimeout = window.setTimeout(() => {
         if (!cancelled && termRef.current) {
           try {
-            // resize 전 스크롤 상태 저장
-            checkUserScroll();
-            const wasAtBottom = !userScrolledUpRef.current;
+            // resize 전 스크롤 상태 저장 (더 정확한 방법)
+            let wasAtBottom = false;
+            try {
+              const buffer = termRef.current.buffer.active;
+              const viewportY = buffer.viewportY;
+              const baseY = buffer.baseY;
+              wasAtBottom = (baseY - viewportY) <= 2;
+            } catch (e) {
+              wasAtBottom = true; // 에러 시 기본값: 맨 아래로
+            }
 
             fitAddon.fit();
 
             // resize 후 스크롤 위치 복원
             if (wasAtBottom && termRef.current) {
-              // setTimeout으로 DOM 업데이트 후 스크롤
-              setTimeout(() => {
-                if (termRef.current) {
+              // requestAnimationFrame으로 렌더링 후 스크롤
+              requestAnimationFrame(() => {
+                if (termRef.current && !cancelled) {
                   termRef.current.scrollToBottom();
                 }
-              }, 0);
+              });
             }
           } catch (e) {
             console.error('Terminal resize error:', e);
@@ -448,6 +504,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       cancelled = true;
 
       // 타이머와 애니메이션 프레임 정리
+      clearInterval(scrollWatchInterval);
       if (writeTimeoutRef.current !== null) {
         clearTimeout(writeTimeoutRef.current);
         writeTimeoutRef.current = null;
