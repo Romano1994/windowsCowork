@@ -96,6 +96,8 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
    */
   const userScrolledUpRef = useRef<boolean>(false);
   const userScrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastScrollYRef = useRef<number>(0);  // 마지막 스크롤 위치
+  const isUserScrollingRef = useRef<boolean>(false);  // 사용자가 능동적으로 스크롤 중
 
   /**
    * 출력 속도 제한 (rate limiting)
@@ -128,27 +130,67 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
     termRef.current = term;
 
-    // 비정상적인 스크롤 점프 감지 및 복구
-    // 일정 간격으로 스크롤 상태를 확인하여 비정상 스크롤 감지
-    const scrollWatchInterval = setInterval(() => {
-      if (!termRef.current || cancelled) return;
+    // onScroll 이벤트로 사용자 스크롤을 더 정확히 감지
+    // xterm.js의 onScroll 이벤트는 스크롤 방향과 위치를 제공
+    let removeOnScroll: { dispose: () => void } | undefined;
+    if (termRef.current?.onScroll) {
+      removeOnScroll = termRef.current.onScroll((newScrollY: number) => {
+        if (cancelled) return;
+
+        // 스크롤 방향 감지
+        if (newScrollY < lastScrollYRef.current) {
+          // 위로 스크롤 (newScrollY가 작아짐)
+          userScrolledUpRef.current = true;
+          isUserScrollingRef.current = true;
+        } else if (newScrollY > lastScrollYRef.current) {
+          // 아래로 스크롤 (newScrollY가 커짐)
+          if (termRef.current) {
+            try {
+              const buffer = termRef.current.buffer.active;
+              const isNearBottom = (buffer.baseY - buffer.viewportY) <= 3;
+              if (isNearBottom) {
+                userScrolledUpRef.current = false;
+                isUserScrollingRef.current = false;
+              } else {
+                isUserScrollingRef.current = true;
+              }
+            } catch (e) {
+              isUserScrollingRef.current = true;
+            }
+          }
+        }
+
+        lastScrollYRef.current = newScrollY;
+
+        // 사용자 스크롤 후 1초 동안은 자동 스크롤 비활성화
+        if (userScrollTimeoutRef.current) {
+          clearTimeout(userScrollTimeoutRef.current);
+        }
+        userScrollTimeoutRef.current = setTimeout(() => {
+          if (!isUserScrollingRef.current) {
+            userScrolledUpRef.current = false;
+          }
+          isUserScrollingRef.current = false;
+          userScrollTimeoutRef.current = null;
+        }, 1000);
+      });
+    }
+
+    // 폴백: onScroll이 없으면 50ms마다 상태 확인
+    const scrollCheckInterval = setInterval(() => {
+      if (!termRef.current || cancelled || !isUserScrollingRef.current) return;
 
       try {
         const buffer = termRef.current.buffer.active;
-        const viewportY = buffer.viewportY;
-        const baseY = buffer.baseY;
-
-        // 비정상적으로 맨 위로 스크롤된 경우 감지
-        // (사용자가 의도적으로 스크롤하지 않은 경우)
-        if (viewportY === 0 && baseY > 10 && !userScrolledUpRef.current) {
-          // 비정상 스크롤 감지: 자동으로 맨 아래로 복구
-          console.warn('Abnormal scroll detected, auto-recovering to bottom');
-          termRef.current.scrollToBottom();
+        const isNearBottom = (buffer.baseY - buffer.viewportY) <= 3;
+        if (isNearBottom && !userScrollTimeoutRef.current) {
+          // 사용자가 수동 조작 없이 맨 아래에 도달
+          userScrolledUpRef.current = false;
         }
       } catch (e) {
         // 무시
       }
-    }, 200); // 200ms마다 체크
+    }, 50);
 
     // Ctrl+C: copy selection (if any), otherwise pass through as SIGINT
     // Ctrl+V / Shift+Insert: paste from clipboard
@@ -159,7 +201,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       if (event.ctrlKey && event.key === 'c') {
         const sel = term.getSelection();
         if (sel) {
-          navigator.clipboard.writeText(sel);
+          window.api.clipboard.writeText(sel);
           term.clearSelection();
           return false;
         }
@@ -169,31 +211,14 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       // 붙여넣기 (Ctrl+V 또는 Shift+Insert)
       if ((event.ctrlKey && event.key === 'v') || (event.shiftKey && event.key === 'Insert')) {
         event.preventDefault();
-        navigator.clipboard.readText()
-          .then((text) => {
-            if (text) {
-              // 대량 텍스트 붙여넣기 시 청크로 나누어 전송 (스크롤 점프 방지)
-              const CHUNK_SIZE = 1000; // 1000자씩 전송
-              if (text.length > CHUNK_SIZE) {
-                let offset = 0;
-                const sendChunk = () => {
-                  if (offset < text.length) {
-                    const chunk = text.slice(offset, offset + CHUNK_SIZE);
-                    window.api.cli.send(sessionId, chunk);
-                    offset += CHUNK_SIZE;
-                    // 다음 청크를 짧은 지연 후 전송 (버퍼 오버플로우 방지)
-                    setTimeout(sendChunk, 10);
-                  }
-                };
-                sendChunk();
-              } else {
-                window.api.cli.send(sessionId, text);
-              }
-            }
-          })
-          .catch((err) => {
-            console.error('Failed to read clipboard:', err);
-          });
+        try {
+          const text = window.api.clipboard.readText();
+          if (text) {
+            window.api.cli.send(sessionId, text);
+          }
+        } catch (err) {
+          console.error('Failed to read clipboard:', err);
+        }
         return false;
       }
 
@@ -280,28 +305,29 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
           // 쓰기 전에 현재 스크롤 상태 확인
           checkUserScroll();
-          const shouldAutoScroll = !userScrolledUpRef.current;
+          const shouldAutoScroll = !userScrolledUpRef.current && !isUserScrollingRef.current;
 
-          // 터미널에 데이터 쓰기 (콜백으로 스크롤 처리)
-          termRef.current.write(bufferedData, () => {
-            // 자동 스크롤이 활성화된 경우에만 맨 아래로 스크롤
-            if (shouldAutoScroll && termRef.current && !cancelled) {
-              try {
-                // 스크롤 전에 다시 한 번 확인 (쓰기 중 사용자가 스크롤했을 수 있음)
-                const buffer = termRef.current.buffer.active;
-                const viewportY = buffer.viewportY;
-                const baseY = buffer.baseY;
-                const stillAtBottom = (baseY - viewportY) <= 2;
+          // 터미널에 데이터 쓰기
+          termRef.current.write(bufferedData);
 
-                if (stillAtBottom) {
-                  termRef.current.scrollToBottom();
+          // 쓰기 후에만 한 번 스크롤 처리 (여러 번 호출 방지)
+          // requestAnimationFrame으로 다음 렌더링 사이클에 스크롤
+          if (shouldAutoScroll) {
+            requestAnimationFrame(() => {
+              if (termRef.current && !cancelled && !userScrolledUpRef.current) {
+                try {
+                  const buffer = termRef.current.buffer.active;
+                  const isAtBottom = (buffer.baseY - buffer.viewportY) <= 3;
+                  // 여전히 맨 아래 근처에 있으면 스크롤 (사용자가 올려도 즉시 복구 안 함)
+                  if (isAtBottom) {
+                    termRef.current.scrollToBottom();
+                  }
+                } catch (e) {
+                  // 버퍼 API 오류
                 }
-              } catch (e) {
-                // 에러 발생 시 안전하게 스크롤
-                termRef.current.scrollToBottom();
               }
-            }
-          });
+            });
+          }
         }
         rafIdRef.current = null;
       });
@@ -393,27 +419,53 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     const handleClick = () => term.focus();
     container.addEventListener('click', handleClick);
 
+    // 우클릭: 선택 텍스트가 있으면 복사, 없으면 붙여넣기
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      const sel = term.getSelection();
+      if (sel) {
+        window.api.clipboard.writeText(sel);
+        term.clearSelection();
+      } else {
+        try {
+          const text = window.api.clipboard.readText();
+          if (text) {
+            window.api.cli.send(sessionId, text);
+          }
+        } catch (err) {
+          console.error('Failed to paste from clipboard:', err);
+        }
+      }
+    };
+    container.addEventListener('contextmenu', handleContextMenu);
+
     // 마우스 휠/스크롤 이벤트로 사용자 스크롤 감지
     const handleWheel = (e: WheelEvent) => {
-      checkUserScroll();
-      // 아래로 스크롤(deltaY > 0)하여 맨 아래로 왔으면 자동 스크롤 재활성화
-      if (e.deltaY > 0 && !userScrolledUpRef.current) {
-        // 타이머 취소 (이미 맨 아래에 있음)
-        if (userScrollTimeoutRef.current) {
-          clearTimeout(userScrollTimeoutRef.current);
-          userScrollTimeoutRef.current = null;
+      // 사용자가 명시적으로 스크롤하고 있음을 표시
+      isUserScrollingRef.current = true;
+
+      // 위로 스크롤
+      if (e.deltaY < 0) {
+        userScrolledUpRef.current = true;
+      }
+      // 아래로 스크롤
+      else if (e.deltaY > 0) {
+        checkUserScroll();
+        // 맨 아래에 도달했으면 자동 스크롤 재활성화
+        if (!userScrolledUpRef.current) {
+          isUserScrollingRef.current = false;
         }
       }
-      // 사용자가 스크롤을 올린 경우 500ms 후 재확인
-      else if (userScrolledUpRef.current) {
-        if (userScrollTimeoutRef.current) {
-          clearTimeout(userScrollTimeoutRef.current);
-        }
-        userScrollTimeoutRef.current = setTimeout(() => {
-          checkUserScroll();
-          userScrollTimeoutRef.current = null;
-        }, 500); // 1초에서 500ms로 단축
+
+      // 사용자 스크롤 플래그 리셋 (800ms 동안 스크롤이 없으면)
+      if (userScrollTimeoutRef.current) {
+        clearTimeout(userScrollTimeoutRef.current);
       }
+      userScrollTimeoutRef.current = setTimeout(() => {
+        isUserScrollingRef.current = false;
+        checkUserScroll();  // 현재 위치 확인
+        userScrollTimeoutRef.current = null;
+      }, 800);
     };
     container.addEventListener('wheel', handleWheel, { passive: true });
 
@@ -504,7 +556,10 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       cancelled = true;
 
       // 타이머와 애니메이션 프레임 정리
-      clearInterval(scrollWatchInterval);
+      clearInterval(scrollCheckInterval);
+      if (removeOnScroll) {
+        removeOnScroll.dispose();
+      }
       if (writeTimeoutRef.current !== null) {
         clearTimeout(writeTimeoutRef.current);
         writeTimeoutRef.current = null;
@@ -526,6 +581,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
       observer.disconnect();
       container.removeEventListener('click', handleClick);
+      container.removeEventListener('contextmenu', handleContextMenu);
       container.removeEventListener('wheel', handleWheel);
       container.removeEventListener('keydown', handleKeyScroll);
       removeOutput();
