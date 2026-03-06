@@ -180,6 +180,14 @@ declare global {
       };
 
       /**
+       * clipboard - 클립보드 관련 API
+       */
+      clipboard: {
+        readText: () => string;
+        writeText: (text: string) => void;
+      };
+
+      /**
        * fs - 파일 시스템 관련 API
        */
       fs: {

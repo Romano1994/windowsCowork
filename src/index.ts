@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, clipboard } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -231,6 +231,15 @@ ipcMain.on('cli:send', (_event, sessionId: string, data: string) => {
   if (entry) {
     entry.proc.write(data);
   }
+});
+
+// ── Clipboard ──
+ipcMain.on('clipboard:readText', (event) => {
+  event.returnValue = clipboard.readText();
+});
+
+ipcMain.on('clipboard:writeText', (_event, text: string) => {
+  clipboard.writeText(text);
 });
 
 ipcMain.on('cli:resize', (_event, sessionId: string, cols: number, rows: number) => {

@@ -48,6 +48,12 @@ contextBridge.exposeInMainWorld('api', {
     },
   },
 
+  // Clipboard
+  clipboard: {
+    readText: () => ipcRenderer.sendSync('clipboard:readText'),
+    writeText: (text: string) => ipcRenderer.send('clipboard:writeText', text),
+  },
+
   // File System
   fs: {
     readDir: (dirPath: string) => ipcRenderer.invoke('fs:readDir', dirPath),
