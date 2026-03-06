@@ -419,6 +419,7 @@ const ChatPanel: React.FC = () => {
     <main id="panel-chat">
       {cliMode ? (
         <TerminalView
+          key={activeSessionId || 'default'}
           provider={provider}
           sessionId={activeSessionId || 'default'}
           sessionPath={activeSession?.path}

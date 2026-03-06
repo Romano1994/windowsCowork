@@ -106,6 +106,14 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
   const lastWriteTimeRef = useRef<number>(0);
   const pendingWritesRef = useRef<number>(0);
 
+  /**
+   * Write/Resize 조정 및 사용자 스크롤 타임스탬프
+   * 터미널에 데이터를 쓰는 중인지 추적하여 resize와의 충돌 방지
+   * 사용자 스크롤 시간을 기록하여 hysteresis 적용
+   */
+  const isWritingRef = useRef<boolean>(false);
+  const lastUserScrollTimeRef = useRef<number>(0);
+
   useEffect(() => {
     if (!containerRef.current) return;
     const container = containerRef.current;
@@ -142,6 +150,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
           // 위로 스크롤 (newScrollY가 작아짐)
           userScrolledUpRef.current = true;
           isUserScrollingRef.current = true;
+          lastUserScrollTimeRef.current = Date.now();
         } else if (newScrollY > lastScrollYRef.current) {
           // 아래로 스크롤 (newScrollY가 커짐)
           if (termRef.current) {
@@ -192,8 +201,8 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       }
     }, 50);
 
-    // Ctrl+C: copy selection (if any), otherwise pass through as SIGINT
-    // Ctrl+V / Shift+Insert: paste from clipboard
+    // Ctrl+C: 선택 텍스트가 있으면 복사, 아니면 SIGINT로 전달
+    // Ctrl+V / Shift+Insert: 클립보드에서 붙여넣기
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
 
@@ -225,12 +234,12 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       return true;
     });
 
-    // PTY handles input echo and line editing — send keystrokes directly
+    // PTY가 입력 에코와 줄 편집을 처리함 — 키 입력을 직접 전송
     term.onData((data: string) => {
       window.api.cli.send(sessionId, data);
     });
 
-    // Sync terminal size → PTY
+    // 터미널 크기를 PTY와 동기화
     term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
       window.api.cli.resize(sessionId, cols, rows);
     });
@@ -305,35 +314,44 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
           // 쓰기 전에 현재 스크롤 상태 확인
           checkUserScroll();
-          const shouldAutoScroll = !userScrolledUpRef.current && !isUserScrollingRef.current;
+          const shouldAutoScroll =
+            !userScrolledUpRef.current &&
+            !isUserScrollingRef.current &&
+            (Date.now() - lastUserScrollTimeRef.current > 500);
 
           // 터미널에 데이터 쓰기
+          isWritingRef.current = true;
           termRef.current.write(bufferedData);
 
           // 쓰기 후에만 한 번 스크롤 처리 (여러 번 호출 방지)
-          // requestAnimationFrame으로 다음 렌더링 사이클에 스크롤
+          // Double RAF: 렌더링 사이클 후 다시 한번 대기하여 안정적인 스크롤
           if (shouldAutoScroll) {
             requestAnimationFrame(() => {
-              if (termRef.current && !cancelled && !userScrolledUpRef.current) {
-                try {
-                  const buffer = termRef.current.buffer.active;
-                  const isAtBottom = (buffer.baseY - buffer.viewportY) <= 3;
-                  // 여전히 맨 아래 근처에 있으면 스크롤 (사용자가 올려도 즉시 복구 안 함)
-                  if (isAtBottom) {
-                    termRef.current.scrollToBottom();
+              requestAnimationFrame(() => {
+                if (termRef.current && !cancelled && !userScrolledUpRef.current) {
+                  try {
+                    const buffer = termRef.current.buffer.active;
+                    const isAtBottom = (buffer.baseY - buffer.viewportY) <= 3;
+                    // 여전히 맨 아래 근처에 있으면 스크롤 (사용자가 올려도 즉시 복구 안 함)
+                    if (isAtBottom) {
+                      termRef.current.scrollToBottom();
+                    }
+                  } catch (e) {
+                    // 버퍼 API 오류
                   }
-                } catch (e) {
-                  // 버퍼 API 오류
                 }
-              }
+                isWritingRef.current = false;
+              });
             });
+          } else {
+            isWritingRef.current = false;
           }
         }
         rafIdRef.current = null;
       });
     };
 
-    // Receive output from CLI process (filter by sessionId)
+    // CLI 프로세스에서 출력 받기 (sessionId로 필터링)
     const removeOutput = window.api.cli.onOutput((sid: string, data: string) => {
       if (sid === sessionId && !cancelled) {
         // 버퍼에 데이터 추가
@@ -384,18 +402,18 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     const removeExit = window.api.cli.onExit((sid: string, code: number | null) => {
       if (sid === sessionId) {
         term.write(`\r\n\x1b[33m--- Process exited (code: ${code ?? 'unknown'}) ---\x1b[0m\r\n`);
-        // Auto-disconnect to sync UI state with actual PTY state
+        // UI 상태를 실제 PTY 상태와 동기화하기 위해 자동 연결 해제
         dispatch(disconnect());
       }
     });
 
-    // Mount: check if PTY already exists (reattach) or spawn new
+    // 마운트: PTY가 이미 존재하는지 확인 (다시 연결) 또는 새로 생성
     (async () => {
       const { exists } = await window.api.cli.exists(sessionId);
       if (cancelled) return;
 
       if (exists) {
-        // Reattach: write scrollback buffer and sync size
+        // 다시 연결: 스크롤백 버퍼를 쓰고 크기 동기화
         const sb = await window.api.cli.getScrollback(sessionId);
         if (cancelled) return;
         if (sb.ok && sb.data) {
@@ -403,19 +421,19 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         }
         window.api.cli.resize(sessionId, term.cols, term.rows);
       } else {
-        // New process
+        // 새 프로세스
         const result = await window.api.cli.connect(sessionId, provider, sessionPath || undefined);
         if (cancelled) return;
         if (!result.ok) {
           term.write(`\x1b[31mError: ${result.error || 'Failed to start CLI process'}\x1b[0m\r\n`);
-          // Don't auto-disconnect — let the user read the error and manually disconnect
+          // 자동 연결 해제하지 않음 — 사용자가 오류를 읽고 수동으로 연결 해제하도록
         } else {
           window.api.cli.resize(sessionId, term.cols, term.rows);
         }
       }
     })();
 
-    // Click to re-focus terminal
+    // 클릭하여 터미널 다시 포커스
     const handleClick = () => term.focus();
     container.addEventListener('click', handleClick);
 
@@ -520,6 +538,12 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       }
       resizeTimeout = window.setTimeout(() => {
         if (!cancelled && termRef.current) {
+          // Write 작업 중에는 resize 스크롤 스킵 (충돌 방지)
+          if (isWritingRef.current) {
+            resizeTimeout = null;
+            return;
+          }
+
           try {
             // resize 전 스크롤 상태 저장 (더 정확한 방법)
             let wasAtBottom = false;
@@ -538,8 +562,17 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
             if (wasAtBottom && termRef.current) {
               // requestAnimationFrame으로 렌더링 후 스크롤
               requestAnimationFrame(() => {
-                if (termRef.current && !cancelled) {
-                  termRef.current.scrollToBottom();
+                if (termRef.current && !cancelled && !isWritingRef.current) {
+                  // 재검증: write 작업이 끝났고 여전히 맨 아래인지 확인
+                  try {
+                    const buffer = termRef.current.buffer.active;
+                    const stillAtBottom = (buffer.baseY - buffer.viewportY) <= 2;
+                    if (stillAtBottom) {
+                      termRef.current.scrollToBottom();
+                    }
+                  } catch (e) {
+                    // 무시
+                  }
                 }
               });
             }
@@ -554,6 +587,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
     return () => {
       cancelled = true;
+      isWritingRef.current = false;
 
       // 타이머와 애니메이션 프레임 정리
       clearInterval(scrollCheckInterval);
@@ -586,7 +620,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       container.removeEventListener('keydown', handleKeyScroll);
       removeOutput();
       removeExit();
-      // Do NOT kill the PTY — just detach listeners and dispose xterm
+      // PTY를 종료하지 말고 단순히 리스너를 분리하고 xterm 정리
       term.dispose();
       termRef.current = null;
     };
