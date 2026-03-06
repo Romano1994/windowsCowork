@@ -12,7 +12,7 @@
  * - useRef: DOM 참조나 렌더링 간 유지되는 값 저장
  * - useCallback: 함수 메모이제이션 (불필요한 재생성 방지)
  */
-import React, { useEffect, useRef, useCallback, useState } from 'react';
+import React, { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 
 // Redux hooks와 액션들을 import
 import { useAppDispatch, useAppSelector } from '../store/hooks';
@@ -50,8 +50,10 @@ const ChatPanel: React.FC = () => {
    * 구조 분해 할당(destructuring)으로 여러 값을 한 번에 가져옵니다:
    * const { a, b } = { a: 1, b: 2 } → const a = 1, b = 2
    */
-  const { messages, isStreaming } = useAppSelector((s) => s.chat);
-  const { provider, connected } = useAppSelector((s) => s.api);
+  const messages = useAppSelector((s) => s.chat.messages);
+  const isStreaming = useAppSelector((s) => s.chat.isStreaming);
+  const provider = useAppSelector((s) => s.api.provider);
+  const connected = useAppSelector((s) => s.api.connected);
   const activeSessionId = useAppSelector((s) => s.session.activeId);
 
   /**
@@ -398,62 +400,32 @@ const ChatPanel: React.FC = () => {
   }
 
   /**
+   * 메시지 목록 메모이제이션
+   * messages가 변경되지 않으면 이전 렌더링 결과를 재사용합니다.
+   * 타이핑 시 input 상태 변경으로 인한 불필요한 메시지 목록 재생성을 방지합니다.
+   */
+  const renderedMessages = useMemo(() =>
+    messages.map((msg) => (
+      <div key={msg.id} className={`chat-msg ${msg.type}`}>
+        {msg.text}
+      </div>
+    )),
+  [messages]);
+
+  /**
    * JSX 반환 - 컴포넌트의 UI를 정의합니다
    */
   return (
     <main id="panel-chat">
-      {/*
-       * 조건부 렌더링
-       *
-       * {condition ? <A /> : <B />}
-       * - condition이 true면 A 컴포넌트
-       * - condition이 false면 B 컴포넌트
-       *
-       * CLI 모드와 채팅 모드를 전환합니다.
-       */}
       {cliMode ? (
-        /**
-         * CLI 모드: 터미널 표시
-         *
-         * props 전달:
-         * - provider: AI 제공자
-         * - sessionId: 세션 ID (없으면 'default')
-         * - sessionPath: 세션의 작업 경로
-         *
-         * ||는 논리 OR 연산자로, 왼쪽이 falsy면 오른쪽 값을 반환합니다.
-         */
         <TerminalView
           provider={provider}
           sessionId={activeSessionId || 'default'}
           sessionPath={activeSession?.path}
         />
       ) : (
-        /**
-         * 채팅 모드: 메시지 목록 표시
-         */
         <div id="chat-messages">
-          {/*
-           * map은 배열의 각 요소를 변환합니다.
-           * messages.map(msg => <JSX>) → 각 메시지를 JSX로 변환
-           *
-           * key prop은 React가 리스트 아이템을 추적하는데 사용됩니다.
-           * 고유한 값이어야 합니다.
-           *
-           * 템플릿 리터럴: `chat-msg ${msg.type}`
-           * - msg.type이 'user'면 "chat-msg user"
-           * - msg.type이 'assistant'면 "chat-msg assistant"
-           * 이렇게 동적으로 클래스를 조합할 수 있습니다.
-           */}
-          {messages.map((msg) => (
-            <div key={msg.id} className={`chat-msg ${msg.type}`}>
-              {msg.text}
-            </div>
-          ))}
-
-          {/*
-           * 스크롤 앵커
-           * ref로 DOM 요소를 참조하여 scrollIntoView할 수 있게 합니다.
-           */}
+          {renderedMessages}
           <div ref={messagesEndRef} />
         </div>
       )}
