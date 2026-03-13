@@ -38,7 +38,11 @@
       "WebFetch(domain:www.warp.dev)",
       "WebSearch",
       "Bash(npm run lint:*)",
-      "Bash(npx eslint:*)"
+      "Bash(npx eslint:*)",
+      "Bash(git log:*)",
+      "Bash(timeout 5 cmd:*)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

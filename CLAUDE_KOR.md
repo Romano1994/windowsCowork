@@ -58,6 +58,15 @@ Redux Toolkit이 5개의 slice로 전역 상태를 관리합니다:
 - `set({ provider, model, apiKey })` - API 설정 및 검증
 - `setModel(model)` - 모델만 변경
 - `restore(config)` - 저장된 설정 복원
+- `setApiKey(provider, apiKey)` - provider의 API 키를 암호화하여 저장
+- `getApiKey(provider)` - provider의 API 키를 복호화하여 가져오기
+- `deleteApiKey(provider)` - 저장된 API 키 제거
+- `getAllApiKeys()` - 저장된 모든 provider 키 목록
+- `migrateFromLocalStorage()` - 기존 localStorage 키를 암호화 저장소로 마이그레이션
+
+**Clipboard API** (`window.api.clipboard`):
+- `readText()` - 시스템 클립보드에서 텍스트 읽기
+- `writeText(text)` - 시스템 클립보드에 텍스트 쓰기
 
 **CLI API** (`window.api.cli`) - 모든 메서드는 멀티 PTY 지원을 위해 sessionId를 받습니다:
 - `connect(sessionId, provider, cwd?)` - PTY 프로세스 생성
@@ -93,6 +102,17 @@ App.tsx (루트 레이아웃)
 - 세션별로 작업 디렉터리 보존
 - 세션 전환 시 모든 상태 유지
 
+**세션 상태 플래그**:
+- `waitingForInput`: 터미널이 사용자 입력을 기다리고 있음을 나타냄
+- `requestTerminalFocus`: CLI 모드에서 파일 더블클릭 시 터미널 자동 포커스
+
+**세션 스냅샷**:
+각 세션은 다음을 보존합니다:
+- 대화 메시지 및 메시지 ID 시퀀스
+- 작업 목록 및 작업 카운터
+- 현재 작업 디렉터리 경로
+- 터미널 상태 (CLI 모드인 경우)
+
 ### AI Provider 통합
 
 Main process는 세 가지 provider에 대한 스트리밍을 구현합니다:
@@ -114,6 +134,18 @@ Main process는 세 가지 provider에 대한 스트리밍을 구현합니다:
 
 모든 provider는 main process 메모리에 대화 히스토리를 유지합니다 (`conversationHistory`).
 
+**시스템 프롬프트** (모든 provider):
+```
+당신은 Windows 데스크톱 자동화를 도와주는 유능한 AI 어시스턴트입니다. 한국어로 답변합니다.
+```
+
+**이미지 처리**:
+- Anthropic: `source: { type: 'base64', media_type, data }` 형식 사용
+- OpenAI: `image_url: { url: data:image/...;base64,... }` 형식 사용
+- Gemini: `inlineData: { mimeType, data }` 형식 사용
+
+각 provider는 파일 첨부를 통합 형식에서 provider별 형식으로 자동 변환합니다.
+
 ### CLI 모드 통합
 
 Provider가 `claude-code` 또는 `codex`일 때:
@@ -122,6 +154,16 @@ Provider가 `claude-code` 또는 `codex`일 때:
 3. Windows에서: `powershell.exe -Command <cli-tool>` 형태로 실행
 4. xterm.js가 renderer에서 터미널 렌더링
 5. PTY I/O 이벤트가 IPC를 통해 흐름 (`cli:output`, `cli:exit`)
+
+**명령어 매핑**:
+- `claude-code` → `cmd.exe /C claude`
+- `codex` → `cmd.exe /C codex`
+
+**PTY 설정**:
+- 기본 크기: 80열 × 24행
+- 스크롤백 버퍼: 100,000자
+- 테마: Catppuccin (xterm.js를 통해 커스터마이징 가능)
+- 각 세션은 sessionId로 식별되는 독립적인 PTY 프로세스 유지
 
 ### AI용 파일 처리
 
@@ -153,13 +195,20 @@ Provider가 `claude-code` 또는 `codex`일 때:
 - node-pty가 올바르게 로드되도록 ASAR 비활성화 (`asar: false`)
 - N-API 사전 빌드 바이너리 사용 (rebuild 불필요)
 
-### 보안 설정
+### Electron Fuses
 
-`forge.config.ts`에 설정:
-- `RunAsNode`: false (renderer에서 node 실행 방지)
-- `EnableCookieEncryption`: true
-- `EnableNodeOptionsEnvironmentVariable`: false
-- `EnableNodeCliInspectArguments`: false
+`@electron/fuses`를 통한 보안 강화:
+- `RunAsNode`: false - Renderer 프로세스에서 Node.js 실행 방지
+- `EnableEmbeddedAsarIntegrityValidation`: false - node-pty를 위해 ASAR 비활성화
+- `OnlyLoadAppFromAsar`: false - 압축 해제된 디렉터리에서 리소스 로드
+- `EnableCookieEncryption`: true - 쿠키 암호화
+- `EnableNodeOptionsEnvironmentVariable`: false - NODE_OPTIONS 주입 차단
+- `EnableNodeCliInspectArguments`: false - inspect 인자 비활성화
+
+### 네이티브 모듈 설정
+
+- `rebuildConfig.onlyModules = []` - 네이티브 모듈 리빌드 건너뛰기 (사전 빌드 바이너리 사용)
+- Windows 설치 프로그램용 Squirrel 이벤트 처리 (startup, install, update, uninstall)
 
 ## 코드 작업 가이드
 
@@ -193,10 +242,40 @@ Provider가 `claude-code` 또는 `codex`일 때:
 3. Main process에서 sessionId를 키로 하는 Map에 세션 범위 상태 유지
 4. 세션 삭제 또는 PTY 종료 시 세션 데이터 정리
 
+### API 키 저장
+
+API 키는 Electron의 `safeStorage` API를 사용하여 안전하게 저장됩니다:
+- **저장 위치**: `{userData}/api-keys.json` (암호화됨)
+- **암호화**: OS 레벨 암호화 (Windows Data Protection API, macOS Keychain, Linux Secret Service)
+- **마이그레이션**: `api:migrateFromLocalStorage`가 기존 localStorage 키를 암호화 저장소로 자동 마이그레이션
+- **IPC 핸들러**: `config:setApiKey`, `config:getApiKey`, `config:deleteApiKey`, `config:getAllApiKeys`
+
+애플리케이션은 더 이상 API 키를 localStorage에 저장하지 않습니다 - 안전한 저장소로 마이그레이션되었습니다.
+
+## 주요 의존성
+
+### 코어 프레임워크
+- **Electron** 40.6.0 - 데스크톱 애플리케이션 프레임워크
+- **React** 19.2.4 - UI 라이브러리
+- **Redux Toolkit** 2.11.2 - 상태 관리
+
+### 터미널 에뮬레이션
+- **node-pty** 1.1.0 - PTY 프로세스 관리 (네이티브 모듈)
+- **@xterm/xterm** 6.0.0 - 터미널 에뮬레이터
+- **@xterm/addon-fit** 0.11.0 - 터미널 자동 크기 조정
+
+### AI SDK
+- **@anthropic-ai/sdk** 0.78.0 - Claude API 클라이언트
+- **openai** 6.23.0 - OpenAI API 클라이언트
+- **@google/generative-ai** 0.24.1 - Gemini API 클라이언트
+
+### 파일 처리
+- **pdf-parse** 2.4.5 - PDF 텍스트 추출
+- **officeparser** 6.0.4 - Office 문서 파싱 (.pptx, .docx, .xlsx)
+
 ## 알려진 이슈
 
 - 일부 UI 텍스트에 인코딩 문제 포함 (한글 문자)
-- API 키가 renderer localStorage에 저장됨 (프로덕션에서는 OS keychain 고려)
 - 확장자 상수가 `src/constants/extensions.ts`와 `FileExplorer.tsx`에 중복 정의
 - `types.d.ts`의 타입 정의가 런타임 동작과 완전히 일치하지 않을 수 있음 (error 필드 불일치)
 

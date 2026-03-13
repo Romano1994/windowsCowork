@@ -58,6 +58,15 @@ All main↔renderer communication flows through the preload bridge:
 - `set({ provider, model, apiKey })` - Set and validate API configuration
 - `setModel(model)` - Change model only
 - `restore(config)` - Restore saved configuration
+- `setApiKey(provider, apiKey)` - Store encrypted API key for provider
+- `getApiKey(provider)` - Retrieve decrypted API key for provider
+- `deleteApiKey(provider)` - Remove stored API key
+- `getAllApiKeys()` - List all stored provider keys
+- `migrateFromLocalStorage()` - Migrate legacy localStorage keys to encrypted storage
+
+**Clipboard API** (`window.api.clipboard`):
+- `readText()` - Read text from system clipboard
+- `writeText(text)` - Write text to system clipboard
 
 **CLI API** (`window.api.cli`) - All methods accept sessionId for multi-PTY support:
 - `connect(sessionId, provider, cwd?)` - Spawn PTY process
@@ -93,6 +102,17 @@ Sessions enable independent working environments:
 - Working directory preserved per session
 - Switching sessions preserves all state
 
+**Session State Flags**:
+- `waitingForInput`: Indicates terminal is waiting for user input
+- `requestTerminalFocus`: Auto-focus terminal on file double-click in CLI mode
+
+**Session Snapshot**:
+Each session preserves:
+- Conversation messages and message ID sequence
+- Task list and task counter
+- Current working directory path
+- Terminal state (when in CLI mode)
+
 ### AI Provider Integration
 
 Main process implements streaming for three providers:
@@ -114,6 +134,18 @@ Main process implements streaming for three providers:
 
 All providers maintain conversation history in main process memory (`conversationHistory`).
 
+**System Prompt** (all providers):
+```
+당신은 Windows 데스크톱 자동화를 도와주는 유능한 AI 어시스턴트입니다. 한국어로 답변합니다.
+```
+
+**Image Handling**:
+- Anthropic: Uses `source: { type: 'base64', media_type, data }` format
+- OpenAI: Uses `image_url: { url: data:image/...;base64,... }` format
+- Gemini: Uses `inlineData: { mimeType, data }` format
+
+Each provider automatically converts file attachments from unified format to provider-specific format.
+
 ### CLI Mode Integration
 
 When provider is `claude-code` or `codex`:
@@ -122,6 +154,16 @@ When provider is `claude-code` or `codex`:
 3. On Windows: Executes as `powershell.exe -Command <cli-tool>`
 4. xterm.js renders terminal in renderer
 5. PTY I/O events flow through IPC (`cli:output`, `cli:exit`)
+
+**Command Mapping**:
+- `claude-code` → `cmd.exe /C claude`
+- `codex` → `cmd.exe /C codex`
+
+**PTY Configuration**:
+- Default size: 80 columns × 24 rows
+- Scrollback buffer: 100,000 characters
+- Theme: Catppuccin (customizable via xterm.js)
+- Each session maintains independent PTY process identified by sessionId
 
 ### File Processing for AI
 
@@ -153,13 +195,20 @@ When provider is `claude-code` or `codex`:
 - ASAR disabled (`asar: false`) to ensure node-pty loads correctly
 - Uses N-API prebuilt binaries (no rebuild required)
 
-### Security Settings
+### Electron Fuses
 
-Configured in `forge.config.ts`:
-- `RunAsNode`: false (prevent node execution in renderer)
-- `EnableCookieEncryption`: true
-- `EnableNodeOptionsEnvironmentVariable`: false
-- `EnableNodeCliInspectArguments`: false
+Security hardening via `@electron/fuses`:
+- `RunAsNode`: false - Prevent Node.js execution in renderer process
+- `EnableEmbeddedAsarIntegrityValidation`: false - ASAR disabled for node-pty
+- `OnlyLoadAppFromAsar`: false - Load resources from unpacked directory
+- `EnableCookieEncryption`: true - Encrypt cookies
+- `EnableNodeOptionsEnvironmentVariable`: false - Block NODE_OPTIONS injection
+- `EnableNodeCliInspectArguments`: false - Disable inspect arguments
+
+### Native Module Configuration
+
+- `rebuildConfig.onlyModules = []` - Skip native module rebuild (uses prebuilt binaries)
+- Squirrel events handled for Windows installer (startup, install, update, uninstall)
 
 ## Working with Code
 
@@ -193,10 +242,40 @@ Each session is identified by a unique sessionId (UUID). To add session-scoped f
 3. In main process, maintain session-scoped state in Maps keyed by sessionId
 4. Clean up session data on session deletion or PTY exit
 
+### API Key Storage
+
+API keys are securely stored using Electron's `safeStorage` API:
+- **Storage location**: `{userData}/api-keys.json` (encrypted)
+- **Encryption**: OS-level encryption (Windows Data Protection API, macOS Keychain, Linux Secret Service)
+- **Migration**: `api:migrateFromLocalStorage` automatically migrates old localStorage keys to encrypted storage
+- **IPC handlers**: `config:setApiKey`, `config:getApiKey`, `config:deleteApiKey`, `config:getAllApiKeys`
+
+The application no longer stores API keys in localStorage - this was migrated to secure storage.
+
+## Key Dependencies
+
+### Core Framework
+- **Electron** 40.6.0 - Desktop application framework
+- **React** 19.2.4 - UI library
+- **Redux Toolkit** 2.11.2 - State management
+
+### Terminal Emulation
+- **node-pty** 1.1.0 - PTY process management (native module)
+- **@xterm/xterm** 6.0.0 - Terminal emulator
+- **@xterm/addon-fit** 0.11.0 - Terminal auto-sizing
+
+### AI SDKs
+- **@anthropic-ai/sdk** 0.78.0 - Claude API client
+- **openai** 6.23.0 - OpenAI API client
+- **@google/generative-ai** 0.24.1 - Gemini API client
+
+### File Processing
+- **pdf-parse** 2.4.5 - PDF text extraction
+- **officeparser** 6.0.4 - Office document parsing (.pptx, .docx, .xlsx)
+
 ## Known Issues
 
 - Some UI text contains encoding issues (Korean characters)
-- API keys stored in renderer localStorage (consider OS keychain for production)
 - Extension constants duplicated between `src/constants/extensions.ts` and `FileExplorer.tsx`
 - Type definitions in `types.d.ts` may not fully match runtime behavior (error field inconsistency)
 
