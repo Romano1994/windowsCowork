@@ -21,6 +21,8 @@ export interface Session {
   messages: ChatMessage[];   // 이 세션의 채팅 기록
   tasks: Task[];             // 이 세션의 작업 목록
   taskCounter: number;       // 작업 ID 카운터
+  waitingForInput?: boolean; // 입력 대기 중 플래그 (백그라운드 알림용)
+  requestTerminalFocus?: boolean; // 터미널 포커스 요청 플래그
 }
 
 /**
@@ -153,11 +155,14 @@ const sessionSlice = createSlice({
      *
      * find는 조건을 만족하는 첫 번째 요소를 찾습니다.
      * 존재하는 세션인지 확인 후 전환합니다.
+     * 전환 시 입력 대기 플래그를 자동으로 해제합니다.
      */
     switchSession(state, action: PayloadAction<string>) {
       const target = state.sessions.find((s) => s.id === action.payload);
       if (target) {
         state.activeId = action.payload;
+        // 세션 전환 시 입력 대기 플래그 자동 해제
+        target.waitingForInput = false;
       }
       saveState(state);
     },
@@ -207,6 +212,69 @@ const sessionSlice = createSlice({
       }
       saveState(state);
     },
+
+    /**
+     * setSessionWaitingForInput - 세션의 입력 대기 플래그 설정
+     *
+     * @param action - 세션 ID와 대기 상태
+     *
+     * 터미널에서 입력 프롬프트 감지 시 호출됩니다.
+     * 백그라운드 세션에만 플래그를 설정하여 시각적 알림을 표시합니다.
+     */
+    setSessionWaitingForInput(state, action: PayloadAction<{ sessionId: string; waiting: boolean }>) {
+      const session = state.sessions.find((s) => s.id === action.payload.sessionId);
+      if (session) {
+        session.waitingForInput = action.payload.waiting;
+      }
+      saveState(state);
+    },
+
+    /**
+     * clearSessionWaitingForInput - 세션의 입력 대기 플래그 해제
+     *
+     * @param action - 세션 ID
+     *
+     * 사용자가 입력을 전송하거나 세션을 전환할 때 호출됩니다.
+     */
+    clearSessionWaitingForInput(state, action: PayloadAction<string>) {
+      const session = state.sessions.find((s) => s.id === action.payload);
+      if (session) {
+        session.waitingForInput = false;
+      }
+      saveState(state);
+    },
+
+    /**
+     * requestTerminalFocus - 터미널 포커스 요청
+     *
+     * @param action - 세션 ID
+     *
+     * FileExplorer에서 파일 더블클릭 시 호출됩니다.
+     * TerminalView가 이 플래그를 감지하여 포커스를 설정합니다.
+     */
+    requestTerminalFocus(state, action: PayloadAction<string>) {
+      const session = state.sessions.find((s) => s.id === action.payload);
+      if (session) {
+        session.requestTerminalFocus = true;
+      }
+      saveState(state);
+    },
+
+    /**
+     * clearTerminalFocusRequest - 터미널 포커스 요청 클리어
+     *
+     * @param action - 세션 ID
+     *
+     * TerminalView가 포커스를 설정한 후 플래그를 해제합니다.
+     * 재렌더링 루프를 방지하기 위해 반드시 호출해야 합니다.
+     */
+    clearTerminalFocusRequest(state, action: PayloadAction<string>) {
+      const session = state.sessions.find((s) => s.id === action.payload);
+      if (session) {
+        session.requestTerminalFocus = false;
+      }
+      saveState(state);
+    },
   },
 });
 
@@ -220,6 +288,10 @@ export const {
   renameSession,
   saveCurrentState,
   updateSessionPath,
+  setSessionWaitingForInput,
+  clearSessionWaitingForInput,
+  requestTerminalFocus,
+  clearTerminalFocusRequest,
 } = sessionSlice.actions;
 
 /**

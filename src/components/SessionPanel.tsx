@@ -254,6 +254,12 @@ const SessionPanel: React.FC = () => {
               )}
               <span className="session-path">{shortenPath(session.path)}</span>
             </div>
+            {/* 입력 대기 뱃지: 백그라운드 세션에서 입력 대기 중일 때 표시 */}
+            {session.waitingForInput && session.id !== activeId && (
+              <div className="session-attention-badge" title="Waiting for input">
+                <div className="pulse-dot"></div>
+              </div>
+            )}
             <button
               className="session-delete"
               onClick={(e) => handleDelete(session.id, e)}

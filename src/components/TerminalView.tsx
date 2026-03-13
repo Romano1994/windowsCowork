@@ -18,6 +18,7 @@ import { FitAddon } from '@xterm/addon-fit';  // 자동 크기 조정 애드온
 import '@xterm/xterm/css/xterm.css';  // 터미널 스타일
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { disconnect } from '../store/apiSlice';
+import { setSessionWaitingForInput, clearSessionWaitingForInput, clearTerminalFocusRequest } from '../store/sessionSlice';
 
 /**
  * CATPPUCCIN_THEME - 터미널 색상 테마
@@ -76,6 +77,19 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
   const dispatch = useAppDispatch();
 
   /**
+   * Redux state - 활성 세션 ID 가져오기
+   */
+  const activeSessionId = useAppSelector((s) => s.session.activeId);
+
+  /**
+   * Redux state - 터미널 포커스 요청 플래그
+   */
+  const shouldFocusTerminal = useAppSelector((s) => {
+    const session = s.session.sessions.find((sess) => sess.id === sessionId);
+    return session?.requestTerminalFocus ?? false;
+  });
+
+  /**
    * useRef로 DOM과 터미널 인스턴스 참조
    */
   const containerRef = useRef<HTMLDivElement>(null);  // 터미널을 렌더링할 div
@@ -114,9 +128,41 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
   const isWritingRef = useRef<boolean>(false);
   const lastUserScrollTimeRef = useRef<number>(0);
 
+  /**
+   * 입력 대기 감지를 위한 Ref
+   * 마지막 출력 시간, 세션별 최근 줄, 세션별 감지 타임아웃을 추적합니다.
+   * 백그라운드 세션의 입력 대기 상태도 감지하기 위해 세션별로 관리합니다.
+   */
+  const lastOutputTimeRef = useRef<number>(0);
+  const recentLinesRef = useRef<Map<string, string[]>>(new Map());
+  const detectionTimeoutRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const firstOutputTimeRef = useRef<Map<string, number>>(new Map());  // 세션별 첫 출력 시간
+
+  /**
+   * 사용자 입력 시점 추적
+   * 입력 에코를 즉시 flush하기 위해 마지막 키 입력 시간을 기록
+   */
+  const lastInputTimeRef = useRef<number>(0);
+
+  /**
+   * 적응형 임계값 시스템을 위한 RTT 측정 인프라
+   * IPC 왕복 시간(Round-Trip Time)을 측정하여 시스템 부하에 자동으로 적응
+   */
+  const ipcRttBufferRef = useRef<number[]>([]);  // 최근 20개 RTT 측정값
+  const pendingInputTimeRef = useRef<number | null>(null);  // 입력 전송 시각
+  const adaptiveThresholdRef = useRef<number>(200);  // 동적 임계값 (초기 200ms)
+
+  /**
+   * 한글/중국어 등 IME 입력 상태 추적
+   * 조합 중인 문자는 PTY에 전송하지 않아 한글 입력 지연 해결
+   */
+  const isComposingRef = useRef<boolean>(false);
+  const lastComposedTextRef = useRef<string>('');  // 마지막으로 조합 완료된 텍스트 (중복 전송 방지용)
+
   useEffect(() => {
     if (!containerRef.current) return;
     const container = containerRef.current;
+    let mounted = true;
     let cancelled = false;
 
     const term = new Terminal({
@@ -127,6 +173,10 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       // 스크롤백 버퍼 제한으로 메모리 사용량 및 렌더링 성능 개선
       // 1000줄로 제한하여 고속 스크롤 및 메모리 문제 방지
       scrollback: 1000,
+      // 커서 렌더링 정확도 향상
+      cursorStyle: 'bar',  // 더 명확한 커서 표시
+      cursorInactiveStyle: 'outline',  // 포커스 잃었을 때 outline
+      letterSpacing: 0,  // 문자 간격 정확히 정렬
     });
 
     const fitAddon = new FitAddon();
@@ -137,6 +187,31 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     term.focus();
 
     termRef.current = term;
+
+    // IME(한글/중국어 등) 입력 상태 추적
+    // 조합 중인 문자는 PTY 에코가 없으므로 전송하지 않음
+    const handleCompositionStart = () => {
+      isComposingRef.current = true;
+    };
+
+    const handleCompositionEnd = (e: CompositionEvent) => {
+      isComposingRef.current = false;
+
+      // 완성된 한글 텍스트를 PTY에 직접 전송
+      if (e.data) {
+        const now = Date.now();
+        lastInputTimeRef.current = now;
+        pendingInputTimeRef.current = now;  // RTT 측정용
+        window.api.cli.send(sessionId, e.data);
+        dispatch(clearSessionWaitingForInput(sessionId));
+
+        // onData에서 중복 전송 방지를 위해 저장
+        lastComposedTextRef.current = e.data;
+      }
+    };
+
+    container.addEventListener('compositionstart', handleCompositionStart);
+    container.addEventListener('compositionend', handleCompositionEnd);
 
     // onScroll 이벤트로 사용자 스크롤을 더 정확히 감지
     // xterm.js의 onScroll 이벤트는 스크롤 방향과 위치를 제공
@@ -236,7 +311,24 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
     // PTY가 입력 에코와 줄 편집을 처리함 — 키 입력을 직접 전송
     term.onData((data: string) => {
+      // IME 조합 중(한글/중국어 등)이면 전송하지 않음
+      // PTY 에코가 없어 지연이 발생하므로, 조합 완료 후에만 전송
+      if (isComposingRef.current) {
+        return;
+      }
+
+      // compositionend에서 이미 전송한 텍스트면 스킵
+      if (data === lastComposedTextRef.current) {
+        lastComposedTextRef.current = '';  // 플래그 리셋
+        return;
+      }
+
+      const now = Date.now();
+      lastInputTimeRef.current = now;
+      pendingInputTimeRef.current = now;  // RTT 측정 시작점
       window.api.cli.send(sessionId, data);
+      // 사용자가 입력을 전송하면 입력 대기 플래그 해제
+      dispatch(clearSessionWaitingForInput(sessionId));
     });
 
     // 터미널 크기를 PTY와 동기화
@@ -351,14 +443,240 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       });
     };
 
-    // CLI 프로세스에서 출력 받기 (sessionId로 필터링)
+    /**
+     * 입력 대기 프롬프트 감지 함수
+     * 지정된 세션의 최근 줄에서 입력 프롬프트 패턴을 확인합니다.
+     * 다중 기준 점수 시스템을 사용하여 false positive 방지
+     */
+    const checkIfWaitingForInput = (targetSessionId: string) => {
+      const recentLines = recentLinesRef.current.get(targetSessionId) || [];
+
+      // 각 줄을 점수 기반으로 분석
+      const isPrompt = recentLines.some((rawLine, index) => {
+        const trimmed = rawLine.trim();
+        if (!trimmed) return false;
+
+        const line = trimmed.toLowerCase();
+        let score = 0;
+
+        // === STRONG SIGNALS (100점 - 단독으로 충분) ===
+
+        // 명확한 이진 선택 프롬프트
+        if (line.includes('(y/n)') || line.includes('[yes/no]') || line.includes('(yes/no)')) {
+          score += 100;
+        }
+
+        // Claude Code 특정 프롬프트
+        if (line.includes('chat about this') || line.includes('Chat about this')) {
+          score += 100;
+        }
+
+        // 번호 메뉴 + 입력 프롬프트
+        if (index > 0) {
+          const prevLine = recentLines[index - 1].trim().toLowerCase();
+          if (/^\s*\d+\)/.test(prevLine) && (line.endsWith('>') || line.endsWith(':'))) {
+            score += 100;
+          }
+        }
+
+        // Shell 프롬프트 패턴 (줄 시작에만)
+        if (/^(ps\s*>|\$|#\s)/.test(line)) {
+          score += 100;
+        }
+
+        // === MEDIUM SIGNALS (60점) ===
+
+        // 대화형 질문
+        if (
+          line.endsWith('?') &&
+          (line.includes('do you want') ||
+            line.includes('would you like') ||
+            line.includes('should i') ||
+            line.includes('which would'))
+        ) {
+          score += 60;
+        }
+
+        // 명령형 + 콜론
+        if (
+          /^(enter|type|input|select|choose)/.test(line) &&
+          line.endsWith(':')
+        ) {
+          score += 60;
+        }
+
+        // 확인 요청
+        if (line.includes('confirm') && (line.endsWith('?') || line.endsWith(':'))) {
+          score += 60;
+        }
+
+        // 옵션 선택 문구
+        if (line.includes('select an option') || line.includes('choose one')) {
+          score += 60;
+        }
+
+        // === WEAK SIGNALS (40점) ===
+
+        // 짧은 줄
+        if (trimmed.length < 80) {
+          score += 40;
+        }
+
+        // 특정 종료 문자 (:, ?)
+        if (line.endsWith(':') || line.endsWith('?')) {
+          score += 40;
+        }
+
+        // "press"와 "key"가 근접
+        const pressIndex = line.indexOf('press');
+        const keyIndex = line.indexOf('key');
+        if (pressIndex !== -1 && keyIndex !== -1 && Math.abs(keyIndex - pressIndex) <= 20) {
+          score += 40;
+        }
+
+        // "waiting for" 또는 "awaiting"
+        if (line.includes('waiting for') || line.includes('awaiting')) {
+          score += 40;
+        }
+
+        // === EDGE CASE BOOSTERS (20점) ===
+
+        // 비밀번호/인증 관련
+        if (/(password|passphrase|token|credentials?|auth)/i.test(line)) {
+          score += 20;
+        }
+
+        // 파일 경로 입력
+        if (/(path|directory|folder|file|location).*:/i.test(line)) {
+          score += 20;
+        }
+
+        // 숫자 입력 요청
+        if (/(number|count|amount|quantity|how many).*[?:]/i.test(line)) {
+          score += 20;
+        }
+
+        // === NEGATIVE SIGNALS ===
+
+        // 로그 레벨 감지 개선: 로그 형식과 프롬프트 형식을 구분
+        // 로그: "[INFO]: message" or "2024-03-10 INFO: message"
+        // 프롬프트: "Info: Please enter your choice:"
+        const hasLogTimestamp = /\d{4}-\d{2}-\d{2}/.test(line) || /\[\d{2}:\d{2}:\d{2}\]/.test(line);
+        const hasLogPrefix = /^\[?(info|error|debug|warning|warn)\]?\s*:/i.test(line);
+        const hasPromptKeywords = /(enter|input|select|choose|type|please)/i.test(line);
+
+        // 로그 형식이거나 타임스탬프가 있으면 거부 (단, 프롬프트 키워드가 있으면 허용)
+        if ((hasLogPrefix || hasLogTimestamp) && !hasPromptKeywords) {
+          return false;
+        }
+
+        // 매우 긴 줄
+        if (trimmed.length > 120) {
+          score -= 50;
+        }
+
+        // 여러 문장 (마침표가 2개 이상)
+        if ((trimmed.match(/\./g) || []).length >= 2) {
+          score -= 40;
+        }
+
+        // 과거형 동사
+        if (
+          /\b(confirmed|entered|pressed|selected|chosen|typed|completed)\b/.test(line)
+        ) {
+          score -= 30;
+        }
+
+        // 마침표로 끝남
+        if (line.endsWith('.')) {
+          score -= 20;
+        }
+
+        // 문서/도움말 관련
+        if (line.includes('documentation') || line.includes('help')) {
+          score -= 30;
+        }
+
+        // 연속 출력 감점을 마지막 줄만 제외하도록 개선
+        // 긴 명령 출력 후 프롬프트는 일반적 패턴이므로 마지막 줄은 감점 안 함
+        if (recentLines.length >= 4 && index < recentLines.length - 1) {
+          // 마지막 줄이 아닌 중간 줄에만 감점 적용
+          score -= 20;
+        }
+
+        // 임계값을 95점으로 완화하여 경계 케이스 커버
+        const meetsThreshold = score >= 95;
+
+        // 디버깅을 위한 신뢰도 로깅 (개발 모드에서만)
+        if (process.env.NODE_ENV === 'development') {
+          if (score >= 80) {
+            console.log(`[PromptDetection] Session ${targetSessionId.slice(0,8)} - Score: ${score}, Line: "${trimmed}"`);
+          }
+        }
+
+        return meetsThreshold;
+      });
+
+      // 백그라운드 세션인 경우에만 플래그 설정
+      if (isPrompt && targetSessionId !== activeSessionId) {
+        dispatch(setSessionWaitingForInput({ sessionId: targetSessionId, waiting: true }));
+      }
+    };
+
+    // CLI 프로세스에서 출력 받기 (모든 세션의 입력 대기 감지, 활성 세션만 렌더링)
     const removeOutput = window.api.cli.onOutput((sid: string, data: string) => {
+      if (!mounted) return;  // unmount된 컴포넌트 무시
+      if (!cancelled) {
+        // === 모든 세션: 입력 대기 감지 ===
+        // 최근 줄 추출 (ANSI 제어 문자 제거 후, 세션별로 최대 10줄 유지)
+        // eslint-disable-next-line no-control-regex
+        const lines = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').split(/\r?\n/);
+        const nonEmptyLines = lines.filter(l => l.trim());
+        if (nonEmptyLines.length > 0) {
+          const current = recentLinesRef.current.get(sid) || [];
+          // 버퍼 크기를 10줄로 확장하여 빠른 출력에서도 프롬프트 캡처
+          recentLinesRef.current.set(sid, [...current, ...nonEmptyLines].slice(-10));
+        }
+
+        // 타임아웃 관리 개선: 최초 출력 시간 추적하여 최대 지연 방지
+        const oldTimeout = detectionTimeoutRef.current.get(sid);
+        const firstOutputTime = firstOutputTimeRef.current.get(sid);
+
+        // 첫 출력이면 시작 시간 기록
+        if (!firstOutputTime) {
+          firstOutputTimeRef.current.set(sid, Date.now());
+        }
+
+        if (oldTimeout) {
+          clearTimeout(oldTimeout);
+        }
+
+        // 최초 출력 후 5초가 지났으면 강제 검사 (연속 출력 중에도)
+        const timeSinceFirstOutput = firstOutputTime ? Date.now() - firstOutputTime : 0;
+        const shouldForceCheck = timeSinceFirstOutput > 5000;
+
+        const newTimeout = setTimeout(() => {
+          if (!cancelled) {
+            checkIfWaitingForInput(sid);
+            // 검사 후 첫 출력 시간 리셋
+            firstOutputTimeRef.current.delete(sid);
+          }
+          detectionTimeoutRef.current.delete(sid);
+        }, shouldForceCheck ? 500 : 3000);
+
+        detectionTimeoutRef.current.set(sid, newTimeout);
+      }
+
+      // === 활성 세션만: 렌더링 ===
       if (sid === sessionId && !cancelled) {
         // 버퍼에 데이터 추가
         outputBufferRef.current += data;
         if (firstBufferedAtRef.current === 0) {
           firstBufferedAtRef.current = Date.now();
         }
+
+        // 마지막 출력 시간 업데이트
+        lastOutputTimeRef.current = Date.now();
 
         // 짧은 지연 후 버퍼 flush
         // 기존 타이머를 매번 취소하지 않고, 최초 이벤트 기준으로 flush를 보장해
@@ -375,8 +693,41 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
           data.includes('\x1b[1A') ||
           data.includes('\x1b[?25');
 
-        // 스피너/진행 표시와 같이 제어문자가 포함된 청크는 즉시 반영
-        if (hasInteractiveControl) {
+        // RTT 측정 및 적응형 임계값 계산
+        let currentThreshold = adaptiveThresholdRef.current;
+        const timeSinceInput = Date.now() - lastInputTimeRef.current;
+
+        if (pendingInputTimeRef.current !== null &&
+            data.length < 20 &&
+            timeSinceInput < 500) {
+          // RTT 측정값 기록
+          const rtt = Date.now() - pendingInputTimeRef.current;
+          ipcRttBufferRef.current.push(rtt);
+
+          // 최근 20개만 유지 (순환 버퍼)
+          if (ipcRttBufferRef.current.length > 20) {
+            ipcRttBufferRef.current.shift();
+          }
+
+          // P95 백분위수로 임계값 계산 (이상값에 강건)
+          if (ipcRttBufferRef.current.length >= 10) {
+            const sorted = [...ipcRttBufferRef.current].sort((a, b) => a - b);
+            const p95Index = Math.floor(sorted.length * 0.95);
+            const p95Rtt = sorted[p95Index];
+
+            // 임계값 = P95 RTT + 50ms 여유 (최소 50ms, 최대 500ms)
+            currentThreshold = Math.max(50, Math.min(500, p95Rtt + 50));
+            adaptiveThresholdRef.current = currentThreshold;
+          }
+
+          pendingInputTimeRef.current = null;  // 측정 완료
+        }
+
+        // 개선된 에코 감지 (동적 임계값 사용)
+        const isInputEcho = timeSinceInput < currentThreshold && data.length < 20;
+
+        // 스피너/진행 표시와 같이 제어문자가 포함된 청크 또는 입력 에코는 즉시 반영
+        if (hasInteractiveControl || isInputEcho) {
           if (writeTimeoutRef.current !== null) {
             clearTimeout(writeTimeoutRef.current);
             writeTimeoutRef.current = null;
@@ -395,6 +746,17 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
           clearTimeout(writeTimeoutRef.current);
           writeTimeoutRef.current = null;
           flushBuffer();
+        }
+
+        // 100개 입력마다 RTT 통계 로깅 (텔레메트리)
+        if (ipcRttBufferRef.current.length > 0 &&
+            ipcRttBufferRef.current.length % 100 === 0) {
+          const sorted = [...ipcRttBufferRef.current].sort((a, b) => a - b);
+          const p50 = sorted[Math.floor(sorted.length * 0.5)];
+          const p95 = sorted[Math.floor(sorted.length * 0.95)];
+          const p99 = sorted[Math.floor(sorted.length * 0.99)];
+
+          console.log(`[TerminalView] IPC RTT stats - P50: ${p50}ms, P95: ${p95}ms, P99: ${p99}ms, Threshold: ${adaptiveThresholdRef.current}ms`);
         }
       }
     });
@@ -586,6 +948,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     observer.observe(container);
 
     return () => {
+      mounted = false;  // 즉시 플래그 설정
       cancelled = true;
       isWritingRef.current = false;
 
@@ -606,6 +969,12 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         cancelAnimationFrame(rafIdRef.current);
         rafIdRef.current = null;
       }
+      // 모든 세션의 입력 대기 감지 타임아웃 정리
+      detectionTimeoutRef.current.forEach((timeout) => {
+        clearTimeout(timeout);
+      });
+      detectionTimeoutRef.current.clear();
+      firstOutputTimeRef.current.clear();  // 첫 출력 시간 Map도 정리
 
       // 남은 버퍼 flush
       if (outputBufferRef.current && termRef.current) {
@@ -618,6 +987,8 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       container.removeEventListener('contextmenu', handleContextMenu);
       container.removeEventListener('wheel', handleWheel);
       container.removeEventListener('keydown', handleKeyScroll);
+      container.removeEventListener('compositionstart', handleCompositionStart);
+      container.removeEventListener('compositionend', handleCompositionEnd);
       removeOutput();
       removeExit();
       // PTY를 종료하지 말고 단순히 리스너를 분리하고 xterm 정리
@@ -625,6 +996,26 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       termRef.current = null;
     };
   }, [sessionId, provider, sessionPath]);
+
+  /**
+   * 터미널 포커스 요청 처리
+   *
+   * FileExplorer에서 파일 더블클릭 시 자동으로 터미널에 포커스합니다.
+   * requestTerminalFocus 플래그가 true가 되면 실행됩니다.
+   */
+  useEffect(() => {
+    if (shouldFocusTerminal && termRef.current) {
+      // requestAnimationFrame으로 브라우저 렌더링 사이클 후 실행
+      requestAnimationFrame(() => {
+        if (termRef.current) {
+          termRef.current.focus();
+
+          // 플래그 클리어 (재실행 방지)
+          dispatch(clearTerminalFocusRequest(sessionId));
+        }
+      });
+    }
+  }, [shouldFocusTerminal, sessionId, dispatch]);
 
   return <div id="terminal-container" style={{marginBottom: '10px'}} ref={containerRef} />;
 };
