@@ -127,19 +127,6 @@ const ChatPanel: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   };
 
-  /**
-   * useEffect - 부수 효과(side effect) 처리
-   *
-   * useEffect(callback, dependencies)
-   * - callback: 실행할 함수
-   * - dependencies: 의존성 배열 (이 값이 변경되면 callback 재실행)
-   *
-   * 여기서는 messages가 변경될 때마다 스크롤을 아래로 이동시킵니다.
-   */
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);  // messages가 변경되면 실행
-
   useEffect(() => {
     if (!cliMode && selectedFile) {
       inputRef.current?.focus();
@@ -497,7 +484,6 @@ const ChatPanel: React.FC = () => {
               if (fileAlert) dispatch(clearFileAlert());
               setInput(e.target.value);
             }}
-            onFocus={scrollToBottom}
             onKeyDown={handleKeyDown}
             placeholder="Enter message..."
             rows={2}
