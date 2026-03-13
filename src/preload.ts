@@ -22,8 +22,15 @@ contextBridge.exposeInMainWorld('api', {
     set: (config: { provider: string; model: string; apiKey: string }) =>
       ipcRenderer.invoke('api:setConfig', config),
     setModel: (model: string) => ipcRenderer.invoke('api:setModel', model),
-    restore: (config: { provider: string; model: string; apiKey: string }) =>
+    restore: (config: { provider: string; model: string }) =>
       ipcRenderer.invoke('api:restore', config),
+    setApiKey: (provider: string, apiKey: string) =>
+      ipcRenderer.invoke('api:setApiKey', provider, apiKey),
+    getApiKey: (provider: string) => ipcRenderer.invoke('api:getApiKey', provider),
+    deleteApiKey: (provider: string) => ipcRenderer.invoke('api:deleteApiKey', provider),
+    getAllApiKeys: () => ipcRenderer.invoke('api:getAllApiKeys'),
+    migrateFromLocalStorage: (oldKeys: Record<string, string>) =>
+      ipcRenderer.invoke('api:migrateFromLocalStorage', oldKeys),
   },
 
   // CLI (multi-PTY: all methods take sessionId)
@@ -38,11 +45,13 @@ contextBridge.exposeInMainWorld('api', {
     getScrollback: (sessionId: string) => ipcRenderer.invoke('cli:getScrollback', sessionId),
     onOutput: (callback: (sessionId: string, data: string) => void) => {
       const handler = (_event: any, sessionId: string, data: string) => callback(sessionId, data);
+      ipcRenderer.removeAllListeners('cli:output');  // 기존 리스너 제거
       ipcRenderer.on('cli:output', handler);
       return () => ipcRenderer.removeListener('cli:output', handler);
     },
     onExit: (callback: (sessionId: string, code: number | null) => void) => {
       const handler = (_event: any, sessionId: string, code: number | null) => callback(sessionId, code);
+      ipcRenderer.removeAllListeners('cli:exit');  // 기존 리스너 제거
       ipcRenderer.on('cli:exit', handler);
       return () => ipcRenderer.removeListener('cli:exit', handler);
     },

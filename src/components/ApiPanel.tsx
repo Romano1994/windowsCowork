@@ -52,14 +52,53 @@ const ApiPanel: React.FC = () => {
   const isCli = isCliProvider(provider);
 
   /**
-   * 시작 시 저장된 설정을 main 프로세스에 복원
+   * 시작 시 저장된 설정을 main 프로세스에 복원 및 암호화된 API 키 로드
    *
    * 빈 의존성 배열([])은 컴포넌트 마운트 시 한 번만 실행됩니다.
    */
   useEffect(() => {
-    if (connected && !isCliProvider(provider) && apiKeys[provider]) {
-      window.api.config.restore({ provider, model, apiKey: apiKeys[provider] });
-    }
+    const loadApiKeys = async () => {
+      // 1. 기존 localStorage에서 API 키 마이그레이션 (한 번만 실행)
+      try {
+        const oldConfig = localStorage.getItem('cowork-api-config');
+        if (oldConfig) {
+          const parsed = JSON.parse(oldConfig);
+          if (parsed.apiKeys && Object.keys(parsed.apiKeys).length > 0) {
+            // 암호화 저장소로 마이그레이션
+            const result = await window.api.config.migrateFromLocalStorage(parsed.apiKeys);
+            if (result.ok && result.migrated > 0) {
+              console.log(`Migrated ${result.migrated} API keys to encrypted storage`);
+
+              // localStorage에서 apiKeys 제거
+              delete parsed.apiKeys;
+              localStorage.setItem('cowork-api-config', JSON.stringify(parsed));
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Migration error:', err);
+      }
+
+      // 2. 암호화 저장소에서 모든 API 키 로드
+      const keys = await window.api.config.getAllApiKeys();
+
+      // Redux에 로드 (메모리에만 저장)
+      Object.entries(keys).forEach(([p, key]) => {
+        if (key) {
+          dispatch(setApiKey({ provider: p as Provider, key }));
+        }
+      });
+
+      // 현재 provider의 키를 입력 필드에 설정
+      setKeyInput(keys[provider] || '');
+
+      // Main 프로세스에 설정 복원 (API 키는 Main에서 자동으로 복원)
+      if (connected && !isCliProvider(provider)) {
+        window.api.config.restore({ provider, model });
+      }
+    };
+
+    loadApiKeys();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -76,10 +115,19 @@ const ApiPanel: React.FC = () => {
    * React.ChangeEvent<HTMLSelectElement>는
    * select 요소에서 발생하는 변경 이벤트 타입입니다.
    */
-  const handleProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleProviderChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const p = e.target.value as Provider;  // 타입 단언
     dispatch(setProvider(p));
-    setKeyInput(apiKeys[p] || '');  // 해당 제공자의 저장된 키 불러오기
+
+    // 암호화 저장소에서 해당 제공자의 API 키 로드
+    const key = await window.api.config.getApiKey(p);
+    setKeyInput(key || '');
+
+    // Redux에도 업데이트 (메모리)
+    if (key) {
+      dispatch(setApiKey({ provider: p, key }));
+    }
+
     setError('');
   };
 
@@ -88,19 +136,21 @@ const ApiPanel: React.FC = () => {
    *
    * async/await를 사용한 비동기 처리:
    * 1. 로딩 상태 활성화
-   * 2. API 키 저장
-   * 3. main 프로세스에 연결 요청
-   * 4. 결과에 따라 연결 상태 업데이트
+   * 2. main 프로세스에 연결 요청 (API 키 검증 및 암호화 저장)
+   * 3. 결과에 따라 연결 상태 업데이트
+   * 4. Redux 메모리 상태 업데이트
    */
   const handleSubmit = async () => {
     setLoading(true);
     setError('');
-    dispatch(setApiKey({ provider, key: keyInput }));
 
+    // Main 프로세스에서 API 키 검증 및 암호화 저장
     const result = await window.api.config.set({ provider, model, apiKey: keyInput });
 
     setLoading(false);
     if (result.ok) {
+      // Redux 메모리 상태 업데이트 (암호화 저장은 Main에서 처리됨)
+      dispatch(setApiKey({ provider, key: keyInput }));
       dispatch(setConnected(true));
       if (!isCliProvider(provider)) {
         dispatch(updateSystemMessage('연결이 완료됐습니다. 무엇을 도와드릴까요?'));

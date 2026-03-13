@@ -122,9 +122,34 @@ declare global {
         setModel: (model: string) => Promise<void>;
 
         /**
-         * restore - 저장된 설정을 복원합니다
+         * restore - 저장된 설정을 복원합니다 (API 키는 Main에서 자동 복원)
          */
-        restore: (config: { provider: string; model: string; apiKey: string }) => Promise<void>;
+        restore: (config: { provider: string; model: string }) => Promise<void>;
+
+        /**
+         * setApiKey - 암호화하여 API 키를 저장합니다
+         */
+        setApiKey: (provider: string, apiKey: string) => Promise<{ ok: boolean }>;
+
+        /**
+         * getApiKey - 암호화된 API 키를 복호화하여 반환합니다
+         */
+        getApiKey: (provider: string) => Promise<string>;
+
+        /**
+         * deleteApiKey - 저장된 API 키를 삭제합니다
+         */
+        deleteApiKey: (provider: string) => Promise<{ ok: boolean }>;
+
+        /**
+         * getAllApiKeys - 모든 암호화된 API 키를 복호화하여 반환합니다
+         */
+        getAllApiKeys: () => Promise<Record<string, string>>;
+
+        /**
+         * migrateFromLocalStorage - localStorage의 API 키를 암호화 저장소로 마이그레이션합니다
+         */
+        migrateFromLocalStorage: (oldKeys: Record<string, string>) => Promise<{ ok: boolean; migrated?: number; error?: string }>;
       };
 
       /**

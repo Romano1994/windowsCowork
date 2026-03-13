@@ -67,7 +67,7 @@ interface SessionApiSnapshot {
 interface ApiState {
   provider: Provider;                           // 현재 선택된 제공자
   model: string;                                // 현재 선택된 모델
-  apiKeys: Record<Provider, string>;            // 각 제공자별 API 키
+  apiKeys: Record<Provider, string>;            // 각 제공자별 API 키 (메모리에만 저장, localStorage에는 저장 안 함)
   connected: boolean;                           // 현재 연결 상태
   connectedSessions: Record<string, SessionApiSnapshot>;  // 각 세션의 연결 상태
 }
@@ -81,19 +81,25 @@ const STORAGE_KEY = 'cowork-api-config';
  * loadState - localStorage에서 API 설정 불러오기
  *
  * @returns 저장된 설정 또는 기본 설정
+ *
+ * 보안 상의 이유로 API 키는 localStorage에 저장되지 않습니다.
+ * API 키는 Main 프로세스의 암호화 저장소에서 복원됩니다.
  */
 function loadState(): ApiState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed.provider && parsed.apiKeys) {
+      if (parsed.provider) {
         /**
          * Spread 연산자(...)로 parsed 객체를 복사합니다.
          * as ApiState는 타입 단언으로, TypeScript에게 이 객체가
          * ApiState 타입임을 알려줍니다.
          */
         const state = { ...parsed } as ApiState;
+
+        // API 키는 localStorage에 저장되지 않으므로 빈 객체로 초기화
+        state.apiKeys = { anthropic: '', openai: '', gemini: '', 'claude-code': '', 'codex': '' };
 
         /**
          * CLI 제공자는 연결을 유지할 수 없습니다
@@ -133,9 +139,13 @@ function loadState(): ApiState {
 
 /**
  * saveState - localStorage에 API 설정 저장
+ *
+ * 보안을 위해 apiKeys는 제외하고 저장합니다.
+ * API 키는 Main 프로세스의 암호화 저장소에 저장됩니다.
  */
 function saveState(state: ApiState) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  const { apiKeys, ...safeState } = state;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(safeState));
 }
 
 /**

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, clipboard } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, clipboard, safeStorage } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -122,6 +122,114 @@ let apiConfig = {
   apiKey: '',
 };
 
+// ── Encrypted API Key Storage ──
+type Provider = 'anthropic' | 'openai' | 'gemini' | 'claude-code' | 'codex';
+
+const getApiKeysPath = () => {
+  const userDataPath = app.getPath('userData');
+  return path.join(userDataPath, 'api-keys.json');
+};
+
+/**
+ * loadApiKeys - 암호화된 API 키 불러오기
+ */
+function loadApiKeys(): Record<Provider, string> {
+  const defaultKeys: Record<Provider, string> = {
+    anthropic: '',
+    openai: '',
+    gemini: '',
+    'claude-code': '',
+    codex: '',
+  };
+
+  try {
+    const keysPath = getApiKeysPath();
+    if (!fs.existsSync(keysPath)) {
+      return defaultKeys;
+    }
+
+    const encrypted = fs.readFileSync(keysPath, 'utf-8');
+    const parsed = JSON.parse(encrypted);
+
+    // safeStorage가 사용 가능한지 확인
+    if (!safeStorage.isEncryptionAvailable()) {
+      writeLog('WARNING: safeStorage encryption not available');
+      return defaultKeys;
+    }
+
+    // 각 제공자별로 복호화
+    const decrypted: Record<Provider, string> = { ...defaultKeys };
+    for (const provider of Object.keys(parsed) as Provider[]) {
+      if (parsed[provider]) {
+        try {
+          const buffer = Buffer.from(parsed[provider], 'base64');
+          decrypted[provider] = safeStorage.decryptString(buffer);
+        } catch (err) {
+          writeLog(`Failed to decrypt API key for ${provider}: ${err}`);
+        }
+      }
+    }
+
+    return decrypted;
+  } catch (err) {
+    writeLog(`Failed to load API keys: ${err}`);
+    return defaultKeys;
+  }
+}
+
+/**
+ * saveApiKey - API 키를 암호화하여 저장
+ */
+function saveApiKey(provider: Provider, apiKey: string): boolean {
+  try {
+    const keysPath = getApiKeysPath();
+
+    // 기존 키 로드
+    let keys: Record<string, string> = {};
+    if (fs.existsSync(keysPath)) {
+      const encrypted = fs.readFileSync(keysPath, 'utf-8');
+      keys = JSON.parse(encrypted);
+    }
+
+    // safeStorage가 사용 가능한지 확인
+    if (!safeStorage.isEncryptionAvailable()) {
+      writeLog('WARNING: safeStorage encryption not available');
+      return false;
+    }
+
+    // API 키 암호화
+    if (apiKey) {
+      const buffer = safeStorage.encryptString(apiKey);
+      keys[provider] = buffer.toString('base64');
+    } else {
+      // 빈 문자열이면 키 삭제
+      delete keys[provider];
+    }
+
+    // 파일에 저장
+    fs.writeFileSync(keysPath, JSON.stringify(keys, null, 2), 'utf-8');
+    return true;
+  } catch (err) {
+    writeLog(`Failed to save API key for ${provider}: ${err}`);
+    return false;
+  }
+}
+
+/**
+ * getApiKey - 복호화된 API 키 가져오기
+ */
+function getApiKey(provider: Provider): string {
+  const keys = loadApiKeys();
+  return keys[provider] || '';
+}
+
+/**
+ * deleteApiKey - API 키 삭제
+ */
+function deleteApiKey(provider: Provider): boolean {
+  return saveApiKey(provider, '');
+}
+
 // ── CLI Processes (multi-PTY per session) ──
 interface PtyEntry {
   proc: any;
@@ -141,11 +249,14 @@ const SYSTEM_PROMPT = '당신은 Windows 데스크톱 자동화를 도와주는 
 const conversationHistory: Array<{ role: string; content: string | any[] }> = [];
 
 // ── IPC: API restore (no validation, sync from renderer on startup) ──
-ipcMain.handle('api:restore', (_event, config: { provider: string; model: string; apiKey: string }) => {
+ipcMain.handle('api:restore', (_event, config: { provider: string; model: string }) => {
+  // 암호화된 저장소에서 API 키 복원
+  const apiKey = getApiKey(config.provider as Provider);
+
   apiConfig = {
     provider: config.provider as typeof apiConfig.provider,
     model: config.model,
-    apiKey: config.apiKey,
+    apiKey,
   };
 });
 
@@ -153,6 +264,59 @@ ipcMain.handle('api:restore', (_event, config: { provider: string; model: string
 ipcMain.handle('api:setModel', (_event, model: string) => {
   apiConfig.model = model;
 });
+
+// ── IPC: Encrypted API Key Management ──
+ipcMain.handle('api:setApiKey', (_event, provider: Provider, apiKey: string) => {
+  const success = saveApiKey(provider, apiKey);
+  if (success && provider === apiConfig.provider) {
+    apiConfig.apiKey = apiKey;
+  }
+  return { ok: success };
+});
+
+ipcMain.handle('api:getApiKey', (_event, provider: Provider) => {
+  return getApiKey(provider);
+});
+
+ipcMain.handle('api:deleteApiKey', (_event, provider: Provider) => {
+  const success = deleteApiKey(provider);
+  if (success && provider === apiConfig.provider) {
+    apiConfig.apiKey = '';
+  }
+  return { ok: success };
+});
+
+ipcMain.handle('api:getAllApiKeys', () => {
+  return loadApiKeys();
+});
+
+ipcMain.handle('api:migrateFromLocalStorage', (_event, oldKeys: Record<Provider, string>) => {
+  try {
+    let migrated = 0;
+    for (const provider of Object.keys(oldKeys) as Provider[]) {
+      const key = oldKeys[provider];
+      if (key && key.trim() !== '') {
+        const success = saveApiKey(provider, key);
+        if (success) {
+          migrated++;
+        }
+      }
+    }
+    writeLog(`Migrated ${migrated} API keys from localStorage to encrypted storage`);
+    return { ok: true, migrated };
+  } catch (err) {
+    writeLog(`Migration failed: ${err}`);
+    return { ok: false, error: String(err) };
+  }
+});
+
+// ── Helper: Get main window dynamically ──
+function getMainWindow(): BrowserWindow | null {
+  const windows = BrowserWindow.getAllWindows();
+  // DevTools가 아닌 메인 윈도우만 필터링
+  const mainWindow = windows.find(w => w.webContents.getType() === 'window');
+  return mainWindow || null;
+}
 
 // ── IPC: CLI Process (multi-PTY) ──
 ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?: string) => {
@@ -189,14 +353,13 @@ ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?
     const entry: PtyEntry = { proc, provider, scrollback: '' };
     cliProcesses.set(sessionId, entry);
 
-    const win = BrowserWindow.getAllWindows()[0];
-
     proc.onData((data: string) => {
       // Accumulate scrollback
       entry.scrollback += data;
       if (entry.scrollback.length > MAX_SCROLLBACK) {
         entry.scrollback = entry.scrollback.slice(-MAX_SCROLLBACK);
       }
+      const win = getMainWindow();  // 매번 동적으로 조회
       if (win && !win.isDestroyed()) {
         win.webContents.send('cli:output', sessionId, data);
       }
@@ -204,6 +367,7 @@ ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?
 
     proc.onExit(({ exitCode }: { exitCode: number }) => {
       writeLog(`[pty:${sessionId}:exit] code=${exitCode}`);
+      const win = getMainWindow();  // 동적 조회
       if (win && !win.isDestroyed()) {
         win.webContents.send('cli:exit', sessionId, exitCode);
       }
@@ -291,6 +455,12 @@ ipcMain.handle('api:setConfig', async (_event, config: { provider: string; model
       const genAI = new GoogleGenerativeAI(apiKey);
       const m = genAI.getGenerativeModel({ model });
       await m.generateContent('hi');
+    }
+
+    // API 키 검증 성공 - 암호화하여 저장
+    const saved = saveApiKey(provider as Provider, apiKey);
+    if (!saved) {
+      return { ok: false, error: 'API 키 암호화 저장 실패' };
     }
 
     apiConfig = { provider: provider as typeof apiConfig.provider, model, apiKey };
