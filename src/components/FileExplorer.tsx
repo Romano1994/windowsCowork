@@ -12,6 +12,7 @@ import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { setDirectory, setInputPath, setSelectedFile, setFileAlert, setError } from '../store/fileSlice';
 import { removeWelcome } from '../store/chatSlice';
 import { isCliProvider } from '../store/apiSlice';
+import { requestTerminalFocus } from '../store/sessionSlice';
 
 /**
  * 지원하는 파일 확장자 정의
@@ -240,6 +241,9 @@ const FileExplorer: React.FC = () => {
 
     // 터미널에 경로 전송
     window.api.cli.send(activeSessionId || 'default', pathStr);
+
+    // 터미널 포커스 요청
+    dispatch(requestTerminalFocus(activeSessionId || 'default'));
   };
 
   /**
