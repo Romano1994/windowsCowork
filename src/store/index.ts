@@ -15,6 +15,7 @@ import fileReducer from './fileSlice';
 import taskReducer from './taskSlice';
 import apiReducer from './apiSlice';
 import sessionReducer from './sessionSlice';
+import todoReducer from './todoSlice';
 
 /**
  * Redux 스토어 생성
@@ -38,6 +39,7 @@ export const store = configureStore({
     task: taskReducer,       // 작업 관리 상태
     api: apiReducer,         // API 설정 상태
     session: sessionReducer, // 세션 관리 상태
+    todo: todoReducer,       // TODO 패널 상태 (세션 cwd의 TODO.md와 동기화)
   },
 });
 

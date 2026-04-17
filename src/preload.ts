@@ -70,6 +70,9 @@ contextBridge.exposeInMainWorld('api', {
   fs: {
     readDir: (dirPath: string) => ipcRenderer.invoke('fs:readDir', dirPath),
     readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
+    writeFile: (filePath: string, content: string) =>
+      ipcRenderer.invoke('fs:writeFile', filePath, content),
+    exists: (filePath: string) => ipcRenderer.invoke('fs:exists', filePath),
     readFileForAI: (filePath: string) => ipcRenderer.invoke('fs:readFileForAI', filePath),
     selectFolder: () => ipcRenderer.invoke('fs:selectFolder'),
     getHome: () => ipcRenderer.invoke('fs:getHome'),

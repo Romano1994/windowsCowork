@@ -7,12 +7,13 @@
  * - CLI 모드에서는 파일 경로를 터미널에 전송
  */
 
-import React, { useEffect, useCallback } from 'react';
-import { useAppDispatch, useAppSelector } from '../store/hooks';
-import { setDirectory, setInputPath, setSelectedFile, setFileAlert, setError } from '../store/fileSlice';
-import { removeWelcome } from '../store/chatSlice';
+import React, { useCallback, useEffect } from 'react';
 import { isCliProvider } from '../store/apiSlice';
+import { removeWelcome } from '../store/chatSlice';
+import { setDirectory, setError, setFileAlert, setInputPath, setSelectedFile } from '../store/fileSlice';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { requestTerminalFocus } from '../store/sessionSlice';
+import { toggleTodoPanel } from '../store/todoSlice';
 
 /**
  * 지원하는 파일 확장자 정의
@@ -55,6 +56,7 @@ const FileExplorer: React.FC = () => {
   const { currentPath, inputPath, entries, selectedFile, error } = useAppSelector((s) => s.file);
   const { provider, connected } = useAppSelector((s) => s.api);
   const activeSessionId = useAppSelector((s) => s.session.activeId);
+  const todoOpen = useAppSelector((s) => s.todo.isOpen);
 
   // CLI 모드 여부 확인
   const cliMode = isCliProvider(provider) && connected;
@@ -380,6 +382,23 @@ const FileExplorer: React.FC = () => {
           </li>
         ))}
       </ul>
+
+      {/*
+       * TODO LIST 토글 버튼 (FileExplorer 최하단 고정)
+       *
+       * CLI 모드에서만 활성화됩니다.
+       * 클릭 시 TodoPanel이 터미널 패널 위에 오버레이됩니다.
+       */}
+      <div id="todo-toggle-row">
+        <button
+          className={`todo-toggle-btn ${todoOpen ? 'active' : ''}`}
+          onClick={() => dispatch(toggleTodoPanel())}
+          disabled={!cliMode}
+          title={cliMode ? 'TODO LIST' : '터미널(CLI) 모드에서만 사용 가능'}
+        >
+          TODO LIST
+        </button>
+      </div>
     </aside>
   );
 };

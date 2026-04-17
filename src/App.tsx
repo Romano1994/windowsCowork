@@ -16,6 +16,7 @@ import FileExplorer from './components/FileExplorer';
 import ChatPanel from './components/ChatPanel';
 import SessionPanel from './components/SessionPanel';
 import ApiPanel from './components/ApiPanel';
+import TodoPanel from './components/TodoPanel';
 
 const STORAGE_KEY_LEFT = 'panel-left-width';
 const STORAGE_KEY_RIGHT = 'panel-right-width';
@@ -111,6 +112,7 @@ const App: React.FC = () => {
           <ApiPanel />
         </div>
       </div>
+      <TodoPanel />
     </div>
   );
 };

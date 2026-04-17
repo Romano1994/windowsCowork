@@ -28,6 +28,7 @@ import { isCliProvider } from '../store/apiSlice';
 import { store } from '../store';
 import TerminalView from './TerminalView';
 
+
 /**
  * ChatPanel 컴포넌트
  *

@@ -244,6 +244,23 @@ declare global {
         }>;
 
         /**
+         * writeFile - UTF-8 텍스트를 파일에 씁니다 (덮어쓰기)
+         */
+        writeFile: (path: string, content: string) => Promise<{
+          ok: boolean;
+          error?: string;
+        }>;
+
+        /**
+         * exists - 파일/디렉토리 존재 여부 확인
+         */
+        exists: (path: string) => Promise<{
+          ok: boolean;
+          exists: boolean;
+          error?: string;
+        }>;
+
+        /**
          * readFileForAI - AI에게 전달할 형식으로 파일을 읽습니다
          * 이미지는 Base64로, 텍스트는 문자열로 변환합니다.
          */

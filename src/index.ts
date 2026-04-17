@@ -728,6 +728,25 @@ ipcMain.handle('fs:readFileForAI', async (_event, filePath: string) => {
   }
 });
 
+ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string) => {
+  try {
+    const resolved = path.resolve(filePath);
+    fs.writeFileSync(resolved, content, 'utf-8');
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('fs:exists', async (_event, filePath: string) => {
+  try {
+    const resolved = path.resolve(filePath);
+    return { ok: true, exists: fs.existsSync(resolved) };
+  } catch (err: any) {
+    return { ok: false, exists: false, error: err.message };
+  }
+});
+
 ipcMain.handle('fs:selectFolder', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory'],
