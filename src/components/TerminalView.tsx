@@ -290,15 +290,16 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
     };
     container.addEventListener('mousedown', handleMouseDown);
 
-    // Ctrl+C: 선택 텍스트가 있으면 복사, 아니면 SIGINT로 전달
-    // Ctrl+V / Shift+Insert: 클립보드에서 붙여넣기
+    // Ctrl+C: 복사 (선택 텍스트를 클립보드로, SIGINT 전송 안 함)
+    // Ctrl+V / Shift+Insert: 붙여넣기
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
 
-      // 복사
+      // 복사 (Ctrl+C)
       if (event.ctrlKey && event.key === 'c') {
         const sel = term.getSelection() || savedSelection;
         if (sel) {
+          event.preventDefault();
           window.api.clipboard.writeText(sel);
           term.clearSelection();
           savedSelection = '';
@@ -307,7 +308,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         return true;
       }
 
-      // 붙여넣기 (Ctrl+V 또는 Shift+Insert)
+      // 붙여넣기 (Ctrl+V / Shift+Insert)
       if ((event.ctrlKey && event.key === 'v') || (event.shiftKey && event.key === 'Insert')) {
         event.preventDefault();
         try {
@@ -318,6 +319,13 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         } catch (err) {
           console.error('Failed to read clipboard:', err);
         }
+        return false;
+      }
+
+      // Ctrl+Backspace: 쉘 단어 삭제(Ctrl+W)로 전달
+      if (event.ctrlKey && !event.altKey && event.key === 'Backspace') {
+        event.preventDefault();
+        window.api.cli.send(sessionId, '\u0017');
         return false;
       }
 

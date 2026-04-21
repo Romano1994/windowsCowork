@@ -26,6 +26,7 @@ import {
 import { deleteSelectedFile, clearFileAlert } from '../store/fileSlice'
 import { isCliProvider } from '../store/apiSlice';
 import { store } from '../store';
+import { deletePreviousWord } from '../utils/textEditing';
 import TerminalView from './TerminalView';
 
 
@@ -367,6 +368,19 @@ const ChatPanel: React.FC = () => {
    * React.KeyboardEvent<T>는 특정 요소(T)에서 발생하는 키보드 이벤트 타입입니다.
    */
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Backspace' && e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+
+      const target = e.currentTarget;
+      const next = deletePreviousWord(input, target.selectionStart, target.selectionEnd);
+      setInput(next.value);
+
+      requestAnimationFrame(() => {
+        inputRef.current?.setSelectionRange(next.selectionStart, next.selectionEnd);
+      });
+      return;
+    }
+
     /**
      * Enter 키를 누르면 메시지 전송
      * Shift+Enter는 줄바꿈 (기본 동작)
