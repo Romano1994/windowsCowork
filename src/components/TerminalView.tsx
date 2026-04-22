@@ -314,7 +314,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         try {
           const text = window.api.clipboard.readText();
           if (text) {
-            window.api.cli.send(sessionId, text);
+            term.paste(text);
           }
         } catch (err) {
           console.error('Failed to read clipboard:', err);
@@ -833,7 +833,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         try {
           const text = window.api.clipboard.readText();
           if (text) {
-            window.api.cli.send(sessionId, text);
+            term.paste(text);
           }
         } catch (err) {
           console.error('Failed to paste from clipboard:', err);
