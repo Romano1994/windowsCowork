@@ -105,10 +105,90 @@ declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 writeLog(`process.argv: ${process.argv.join(' ')}`);
 
 // Handle Squirrel events (install, update, uninstall)
+const EXECUTE_TODO_SKILL = `---
+name: execute-todo
+description: TODO.md의 특정 대주제 항목들을 실행하고 완료된 섹션을 삭제
+disable-model-invocation: false
+allowed-tools: Read, Edit, Write, Glob, Grep, Bash
+---
+
+# TODO 항목 실행
+
+프로젝트 루트의 \`TODO.md\`에서 \`$ARGUMENTS\`로 지정된 대주제 섹션의 모든 작업 항목을 실제로 실행하고, 전부 성공하면 해당 섹션을 \`TODO.md\`에서 삭제합니다.
+
+## 사용법
+
+\`\`\`
+/execute-todo 홈화면
+/execute-todo 캘린더
+\`\`\`
+
+## 실행 프로세스
+
+### 1단계: TODO.md 읽기 및 섹션 추출
+
+1. 프로젝트 루트의 \`TODO.md\`를 읽는다.
+2. \`## $ARGUMENTS\` 헤더와 일치하는 섹션을 찾는다.
+3. 해당 섹션 아래 \`-\`로 시작하는 모든 항목을 실행 목록으로 추출한다.
+4. 섹션이 없으면 사용자에게 알리고 종료한다.
+
+### 2단계: 각 항목 실행
+
+항목을 순서대로 하나씩 실행한다.
+
+- 항목 실행 전: \`▶ [항목 내용] 실행 중...\` 출력
+- 항목 내용을 분석하여 관련 파일을 탐색(Glob/Grep)하고 실제 코드를 수정한다.
+- 항목 완료 후: \`✓ [항목 내용] 완료\` 출력
+- 오류 발생 시: 즉시 중단하고 사용자에게 상세 상황을 보고한다.
+
+### 3단계: 완료 후 TODO.md에서 섹션 삭제
+
+모든 항목이 성공한 경우에만 실행한다.
+
+1. \`TODO.md\`를 다시 읽는다.
+2. \`## $ARGUMENTS\` 헤더부터 다음 \`##\` 헤더 직전(또는 파일 끝)까지를 삭제한다.
+3. 연속된 빈 줄이 2줄 이상 남지 않도록 정리한다.
+4. 파일을 저장한다.
+
+### 4단계: 결과 보고
+
+\`\`\`
+✅ '$ARGUMENTS' 완료 (N개 항목)
+   TODO.md에서 섹션 삭제 완료
+\`\`\`
+
+## 주의사항
+
+- 일부 항목이라도 실패하면 \`TODO.md\`는 수정하지 않는다.
+- 파일 수정 시 기존 코드 스타일을 유지한다.
+- 불필요한 설명 없이 결과 위주로 간결하게 보고한다.
+`;
+
+const installClaudeSkill = () => {
+  try {
+    const userProfile = process.env.USERPROFILE || process.env.HOME || '';
+    const claudeDir = path.join(userProfile, '.claude');
+    if (!fs.existsSync(claudeDir)) {
+      writeLog('Claude Code not detected (.claude dir missing), skipping skill install');
+      return;
+    }
+    const skillDir = path.join(claudeDir, 'skills', 'execute-todo');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), EXECUTE_TODO_SKILL, 'utf-8');
+    writeLog(`✓ execute-todo skill installed to ${skillDir}`);
+  } catch (e: any) {
+    writeLog(`✗ Failed to install Claude skill: ${e.message}`);
+  }
+};
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const isSquirrelStartup = require('electron-squirrel-startup');
 if (isSquirrelStartup) {
   writeLog('Squirrel startup detected → app.quit()');
+  const squirrelCmd = process.argv[1];
+  if (squirrelCmd === '--squirrel-install' || squirrelCmd === '--squirrel-updated') {
+    installClaudeSkill();
+  }
   app.quit();
   process.exit(0);
 } else {
@@ -237,7 +317,7 @@ interface PtyEntry {
   scrollback: string;
 }
 const cliProcesses = new Map<string, PtyEntry>();
-const MAX_SCROLLBACK = 100_000;
+const MAX_SCROLLBACK = 1_000_000;
 
 const CLI_COMMANDS: Record<string, { cmd: string; args: string[] }> = {
   'claude-code': { cmd: 'claude', args: [] },
@@ -392,9 +472,24 @@ ipcMain.handle('cli:disconnect', (_event, sessionId: string) => {
 
 ipcMain.on('cli:send', (_event, sessionId: string, data: string) => {
   const entry = cliProcesses.get(sessionId);
-  if (entry) {
+  if (!entry) return;
+
+  const CHUNK_SIZE = 512;
+  if (data.length <= CHUNK_SIZE) {
     entry.proc.write(data);
+    return;
   }
+
+  // 대용량 텍스트를 청크로 나눠 PTY 파이프 버퍼 오버플로우 방지
+  let offset = 0;
+  const writeNext = () => {
+    const cur = cliProcesses.get(sessionId);
+    if (!cur || offset >= data.length) return;
+    cur.proc.write(data.slice(offset, offset + CHUNK_SIZE));
+    offset += CHUNK_SIZE;
+    if (offset < data.length) setTimeout(writeNext, 5);
+  };
+  writeNext();
 });
 
 // ── Clipboard ──

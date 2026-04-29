@@ -52,6 +52,8 @@ const CATPPUCCIN_THEME = {
   brightWhite: '#a6adc8',
 };
 
+const TERMINAL_SCROLLBACK_LINES = 10_000;
+
 /**
  * TerminalViewProps - 컴포넌트 Props 타입
  *
@@ -172,7 +174,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       cursorBlink: true,
       // 스크롤백 버퍼 제한으로 메모리 사용량 및 렌더링 성능 개선
       // 1000줄로 제한하여 고속 스크롤 및 메모리 문제 방지
-      scrollback: 1000,
+      scrollback: TERMINAL_SCROLLBACK_LINES,
       // 커서 렌더링 정확도 향상
       cursorStyle: 'bar',  // 더 명확한 커서 표시
       cursorInactiveStyle: 'outline',  // 포커스 잃었을 때 outline

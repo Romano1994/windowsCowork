@@ -55,19 +55,17 @@ const todoSlice = createSlice({
       state.loadedPath = null;
       state.error = null;
     },
-    addTodo(state, action: PayloadAction<{ title: string; subtitle: string; description: string }>) {
+    addTodo(state, action: PayloadAction<{ title: string; description: string }>) {
       state.todos.push({
         id: newTodoId(),
         title: action.payload.title,
-        subtitle: action.payload.subtitle,
         description: action.payload.description,
       });
     },
-    updateTodo(state, action: PayloadAction<{ id: string; title: string; subtitle: string; description: string }>) {
+    updateTodo(state, action: PayloadAction<{ id: string; title: string; description: string }>) {
       const t = state.todos.find((x) => x.id === action.payload.id);
       if (t) {
         t.title = action.payload.title;
-        t.subtitle = action.payload.subtitle;
         t.description = action.payload.description;
       }
     },

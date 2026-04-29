@@ -18,7 +18,6 @@
 export interface Todo {
   id: string;
   title: string;
-  subtitle: string;
   description: string;
 }
 
@@ -33,7 +32,6 @@ function makeId(): string {
  *
  * `## ` 헤더 기준으로 블록 분할.
  * 블록의 첫 줄 = title
- * 첫 번째 *...* 이탤릭 줄 = subtitle (없으면 '')
  * 이후 줄들 = description (trim)
  */
 export function parseTodoMd(text: string): Todo[] {
@@ -60,32 +58,10 @@ export function parseTodoMd(text: string): Todo[] {
 }
 
 function finalizeBlock(block: { title: string; body: string[] }): Todo {
-  let subtitle = '';
-  const descLines: string[] = [];
-  let subtitleTaken = false;
-
-  for (const line of block.body) {
-    const trimmed = line.trim();
-    if (!subtitleTaken) {
-      if (trimmed === '') continue;
-      const m = trimmed.match(/^\*(.+)\*$/);
-      if (m) {
-        subtitle = m[1].trim();
-        subtitleTaken = true;
-        continue;
-      }
-      subtitleTaken = true;
-      descLines.push(line);
-    } else {
-      descLines.push(line);
-    }
-  }
-
-  const description = descLines.join('\n').trim();
+  const description = block.body.join('\n').trim();
   return {
     id: makeId(),
     title: block.title,
-    subtitle,
     description,
   };
 }
@@ -99,9 +75,6 @@ export function serializeTodoMd(todos: Todo[]): string {
   for (const t of todos) {
     const title = (t.title || '').trim() || '(제목 없음)';
     parts.push(`## ${title}`);
-    if (t.subtitle && t.subtitle.trim()) {
-      parts.push(`*${t.subtitle.trim()}*`);
-    }
     if (t.description && t.description.trim()) {
       parts.push('');
       parts.push(t.description.trim());

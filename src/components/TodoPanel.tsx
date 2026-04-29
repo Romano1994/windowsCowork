@@ -31,11 +31,10 @@ function joinTodoPath(dir: string): string {
 
 interface FormState {
   title: string;
-  subtitle: string;
   description: string;
 }
 
-const emptyForm: FormState = { title: '', subtitle: '', description: '' };
+const emptyForm: FormState = { title: '', description: '' };
 
 const DEFAULT_W = 380;
 const DEFAULT_H = 480;
@@ -186,9 +185,9 @@ const TodoPanel: React.FC = () => {
     if ((showAddForm || editingId) && form.title.trim()) {
       const title = form.title.trim();
       if (editingId) {
-        dispatch(updateTodo({ id: editingId, title, subtitle: form.subtitle.trim(), description: form.description.trim() }));
+        dispatch(updateTodo({ id: editingId, title, description: form.description.trim() }));
       } else {
-        dispatch(addTodo({ title, subtitle: form.subtitle.trim(), description: form.description.trim() }));
+        dispatch(addTodo({ title, description: form.description.trim() }));
       }
     }
     dispatch(setTodoPanelOpen(false));
@@ -220,7 +219,7 @@ const TodoPanel: React.FC = () => {
     e.stopPropagation();
     setShowAddForm(false);
     setEditingId(t.id);
-    setForm({ title: t.title, subtitle: t.subtitle, description: t.description });
+    setForm({ title: t.title, description: t.description });
     setExpandedId(t.id);
   };
 
@@ -234,9 +233,9 @@ const TodoPanel: React.FC = () => {
     const title = form.title.trim();
     if (!title) return;
     if (editingId) {
-      dispatch(updateTodo({ id: editingId, title, subtitle: form.subtitle.trim(), description: form.description.trim() }));
+      dispatch(updateTodo({ id: editingId, title, description: form.description.trim() }));
     } else {
-      dispatch(addTodo({ title, subtitle: form.subtitle.trim(), description: form.description.trim() }));
+      dispatch(addTodo({ title, description: form.description.trim() }));
     }
     cancelForm();
   };
@@ -321,9 +320,6 @@ const TodoPanel: React.FC = () => {
                         <span className="todo-drag-handle" title="드래그로 순서 변경">⠿</span>
                         <div className="todo-item-main">
                           <div className="todo-item-title">{t.title || '(제목 없음)'}</div>
-                          {t.subtitle && (
-                            <div className="todo-item-subtitle">{t.subtitle}</div>
-                          )}
                         </div>
                         <div className="todo-item-actions">
                           <button
@@ -398,13 +394,6 @@ const TodoForm: React.FC<TodoFormProps> = ({ form, setForm, onSubmit, onCancel, 
         value={form.title}
         autoFocus
         onChange={(e) => setForm({ ...form, title: e.target.value })}
-      />
-      <input
-        className="todo-form-input"
-        type="text"
-        placeholder="소주제"
-        value={form.subtitle}
-        onChange={(e) => setForm({ ...form, subtitle: e.target.value })}
       />
       <textarea
         className="todo-form-textarea"
