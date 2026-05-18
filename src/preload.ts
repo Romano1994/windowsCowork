@@ -38,9 +38,10 @@ contextBridge.exposeInMainWorld('api', {
 
   // CLI (multi-PTY: all methods take sessionId)
   cli: {
-    connect: (sessionId: string, provider: string, cwd?: string) =>
-      ipcRenderer.invoke('cli:connect', sessionId, provider, cwd),
+    connect: (sessionId: string, provider: string, cwd?: string, claudeSessionId?: string) =>
+      ipcRenderer.invoke('cli:connect', sessionId, provider, cwd, claudeSessionId),
     disconnect: (sessionId: string) => ipcRenderer.invoke('cli:disconnect', sessionId),
+    renameSession: (oldId: string, newId: string) => ipcRenderer.invoke('cli:rename-session', oldId, newId),
     send: (sessionId: string, data: string) => ipcRenderer.send('cli:send', sessionId, data),
     resize: (sessionId: string, cols: number, rows: number) =>
       ipcRenderer.send('cli:resize', sessionId, cols, rows),
@@ -57,6 +58,13 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.removeAllListeners('cli:exit');  // 기존 리스너 제거
       ipcRenderer.on('cli:exit', handler);
       return () => ipcRenderer.removeListener('cli:exit', handler);
+    },
+    onSessionId: (callback: (sessionId: string, claudeSessionId: string) => void) => {
+      const handler = (_event: any, sessionId: string, claudeSessionId: string) =>
+        callback(sessionId, claudeSessionId);
+      ipcRenderer.removeAllListeners('cli:session-id');
+      ipcRenderer.on('cli:session-id', handler);
+      return () => ipcRenderer.removeListener('cli:session-id', handler);
     },
   },
 

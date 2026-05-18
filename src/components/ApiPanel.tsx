@@ -224,9 +224,11 @@ const ApiPanel: React.FC = () => {
         <label>
           <span>Provider</span>
           <select value={provider} onChange={handleProviderChange}>
-            {(Object.keys(PROVIDER_LABELS) as Provider[]).map((p) => (
-              <option key={p} value={p}>{PROVIDER_LABELS[p]}</option>
-            ))}
+            {(Object.keys(PROVIDER_LABELS) as Provider[])
+              .filter((p) => isCliProvider(p))
+              .map((p) => (
+                <option key={p} value={p}>{PROVIDER_LABELS[p]}</option>
+              ))}
           </select>
         </label>
         {!isCli && (

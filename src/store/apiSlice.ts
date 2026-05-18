@@ -98,6 +98,13 @@ function loadState(): ApiState {
          */
         const state = { ...parsed } as ApiState;
 
+        // 비-CLI 제공자는 비활성화되었으므로 claude-code로 보정
+        if (!isCliProvider(state.provider)) {
+          state.provider = 'claude-code';
+          state.model = '';
+          state.connected = false;
+        }
+
         // API 키는 localStorage에 저장되지 않으므로 빈 객체로 초기화
         state.apiKeys = { anthropic: '', openai: '', gemini: '', 'claude-code': '', 'codex': '' };
 
@@ -129,8 +136,8 @@ function loadState(): ApiState {
    * 모든 API 키는 빈 문자열로 초기화됩니다.
    */
   return {
-    provider: 'anthropic',
-    model: MODELS.anthropic[0],  // 첫 번째 모델 선택
+    provider: 'claude-code',
+    model: '',
     apiKeys: { anthropic: '', openai: '', gemini: '', 'claude-code': '', 'codex': '' },
     connected: false,
     connectedSessions: {},

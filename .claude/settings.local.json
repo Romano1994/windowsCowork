@@ -49,7 +49,14 @@
       "Bash(rm -rf .git)",
       "Bash(git init:*)",
       "Bash(git remote:*)",
-      "Bash(git branch:*)"
+      "Bash(git branch:*)",
+      "Bash(where.exe claude *)",
+      "Bash(where.exe codex *)",
+      "Bash(node probe-title.js claude 7000)",
+      "Bash(node probe-title.js codex 7000)",
+      "Bash(node probe-session.js)",
+      "Bash(node probe-session2.js)",
+      "Bash(npx electron-forge *)"
     ]
   }
 }

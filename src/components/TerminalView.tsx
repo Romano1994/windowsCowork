@@ -92,6 +92,15 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
   });
 
   /**
+   * 이 세션이 영속화된(=Claude session-id를 보유한) 세션인지 여부.
+   * lazy-spawn 시 --resume <id>로 대화 맥락을 복원하기 위해 사용한다.
+   */
+  const isPersistedClaudeSession = useAppSelector((s) => {
+    const session = s.session.sessions.find((sess) => sess.id === sessionId);
+    return session ? !session.ephemeral && session.provider === 'claude-code' : false;
+  });
+
+  /**
    * useRef로 DOM과 터미널 인스턴스 참조
    */
   const containerRef = useRef<HTMLDivElement>(null);  // 터미널을 렌더링할 div
@@ -160,6 +169,7 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
    */
   const isComposingRef = useRef<boolean>(false);
   const lastComposedTextRef = useRef<string>('');  // 마지막으로 조합 완료된 텍스트 (중복 전송 방지용)
+  const lastComposedTimeRef = useRef<number>(0);   // 조합 완료 시각 (중복 제거 시간 창 제한용)
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -192,6 +202,11 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
 
     // IME(한글/중국어 등) 입력 상태 추적
     // 조합 중인 문자는 PTY 에코가 없으므로 전송하지 않음
+    //
+    // 캡처 단계({ capture: true })로 등록하여 xterm.js 내부의 composition
+    // 핸들러보다 먼저 isComposingRef를 갱신한다. 이렇게 하지 않으면
+    // xterm이 조합 완료 텍스트를 onData로 보내는 시점에 isComposingRef가
+    // 아직 true로 남아 입력이 통째로 누락될 수 있다.
     const handleCompositionStart = () => {
       isComposingRef.current = true;
     };
@@ -207,13 +222,16 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         window.api.cli.send(sessionId, e.data);
         dispatch(clearSessionWaitingForInput(sessionId));
 
-        // onData에서 중복 전송 방지를 위해 저장
+        // xterm이 동일 텍스트를 onData로 다시 보낼 수 있어 중복 제거용으로 저장.
+        // 시간(now)도 함께 기록해, 이 값이 stale 상태로 남아
+        // 한참 뒤의 동일한 입력을 무음 드롭하는 일을 막는다.
         lastComposedTextRef.current = e.data;
+        lastComposedTimeRef.current = now;
       }
     };
 
-    container.addEventListener('compositionstart', handleCompositionStart);
-    container.addEventListener('compositionend', handleCompositionEnd);
+    container.addEventListener('compositionstart', handleCompositionStart, true);
+    container.addEventListener('compositionend', handleCompositionEnd, true);
 
     // onScroll 이벤트로 사용자 스크롤을 더 정확히 감지
     // xterm.js의 onScroll 이벤트는 스크롤 방향과 위치를 제공
@@ -342,8 +360,13 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         return;
       }
 
-      // compositionend에서 이미 전송한 텍스트면 스킵
-      if (data === lastComposedTextRef.current) {
+      // compositionend에서 이미 전송한 텍스트를 xterm이 다시 보낸 경우 스킵.
+      // 250ms 시간 창 안에서 동일 텍스트일 때만 중복으로 간주하여,
+      // 플래그가 stale 상태로 남아 이후 동일 입력을 삼키는 일을 방지한다.
+      if (
+        data === lastComposedTextRef.current &&
+        Date.now() - lastComposedTimeRef.current < 250
+      ) {
         lastComposedTextRef.current = '';  // 플래그 리셋
         return;
       }
@@ -808,8 +831,9 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
         }
         window.api.cli.resize(sessionId, term.cols, term.rows);
       } else {
-        // 새 프로세스
-        const result = await window.api.cli.connect(sessionId, provider, sessionPath || undefined);
+        // 새 프로세스 — 영속화된 claude-code 세션이면 sessionId 자체가 Claude session-id이므로 --resume용으로 전달
+        const resumeId = isPersistedClaudeSession ? sessionId : undefined;
+        const result = await window.api.cli.connect(sessionId, provider, sessionPath || undefined, resumeId);
         if (cancelled) return;
         if (!result.ok) {
           term.write(`\x1b[31mError: ${result.error || 'Failed to start CLI process'}\x1b[0m\r\n`);
@@ -1013,8 +1037,8 @@ const TerminalView: React.FC<TerminalViewProps> = ({ provider, sessionId, sessio
       container.removeEventListener('contextmenu', handleContextMenu);
       container.removeEventListener('wheel', handleWheel);
       container.removeEventListener('keydown', handleKeyScroll);
-      container.removeEventListener('compositionstart', handleCompositionStart);
-      container.removeEventListener('compositionend', handleCompositionEnd);
+      container.removeEventListener('compositionstart', handleCompositionStart, true);
+      container.removeEventListener('compositionend', handleCompositionEnd, true);
       removeOutput();
       removeExit();
       // PTY를 종료하지 말고 단순히 리스너를 분리하고 xterm 정리

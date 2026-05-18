@@ -170,13 +170,19 @@ declare global {
          * @param provider - AI 제공자 ('claude-code' 또는 'codex')
          * @param cwd - 작업 디렉토리 (선택사항)
          */
-        connect: (sessionId: string, provider: string, cwd?: string) =>
+        connect: (sessionId: string, provider: string, cwd?: string, claudeSessionId?: string) =>
           Promise<{ ok: boolean; existing?: boolean; error?: string }>;
 
         /**
          * disconnect - CLI 프로세스를 종료합니다
          */
         disconnect: (sessionId: string) => Promise<{ ok: boolean }>;
+
+        /**
+         * renameSession - 메인 프로세스 PTY Map의 키를 변경합니다 (session-id 승격용)
+         */
+        renameSession: (oldId: string, newId: string) =>
+          Promise<{ ok: boolean; error?: string }>;
 
         /**
          * send - CLI에 입력을 전송합니다
@@ -207,6 +213,11 @@ declare global {
          * onExit - 프로세스 종료 시 호출될 리스너를 등록합니다
          */
         onExit: (cb: (sessionId: string, code: number | null) => void) => () => void;
+
+        /**
+         * onSessionId - Claude Code session-id 감지 시 호출될 리스너
+         */
+        onSessionId: (cb: (sessionId: string, claudeSessionId: string) => void) => () => void;
       };
 
       /**

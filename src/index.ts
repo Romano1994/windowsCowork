@@ -315,6 +315,8 @@ interface PtyEntry {
   proc: any;
   provider: string;
   scrollback: string;
+  sessionId: string;  // mutable: cli:rename-session으로 갱신 가능
+  sessionIdWatcher?: fs.FSWatcher;
 }
 const cliProcesses = new Map<string, PtyEntry>();
 const MAX_SCROLLBACK = 1_000_000;
@@ -323,6 +325,64 @@ const CLI_COMMANDS: Record<string, { cmd: string; args: string[] }> = {
   'claude-code': { cmd: 'claude', args: [] },
   'codex': { cmd: 'codex', args: [] },
 };
+
+/**
+ * Claude Code의 cwd-hash 규칙: path의 `:`, `\`, `/`를 `-`로 치환.
+ * 예: C:\windowsCowork → C--windowsCowork
+ */
+function claudeCwdHash(cwd: string): string {
+  return cwd.replace(/[:\\/]/g, '-');
+}
+
+/**
+ * watchClaudeSessionId
+ * spawn 시점 이후에 ~/.claude/projects/<cwd-hash>/ 디렉토리에 새로 생성되는
+ * <uuid>.jsonl 파일을 감지하여 renderer로 'cli:session-id' 이벤트를 발송한다.
+ *
+ * - 이미 존재하던 파일은 무시 (mtime 갱신은 false positive 가능)
+ * - 첫 새 파일만 잡고 watcher 종료
+ */
+function watchClaudeSessionId(sessionId: string, cwd: string): fs.FSWatcher | undefined {
+  try {
+    const projDir = path.join(
+      process.env.USERPROFILE || process.env.HOME || '.',
+      '.claude',
+      'projects',
+      claudeCwdHash(cwd)
+    );
+    if (!fs.existsSync(projDir)) {
+      try { fs.mkdirSync(projDir, { recursive: true }); } catch { /* ignore */ }
+    }
+    const before = new Set<string>();
+    try {
+      for (const f of fs.readdirSync(projDir)) {
+        if (f.endsWith('.jsonl')) before.add(f);
+      }
+    } catch { /* ignore */ }
+
+    const watcher = fs.watch(projDir, (eventType, filename) => {
+      if (!filename) return;
+      const name = String(filename);
+      if (!name.endsWith('.jsonl')) return;
+      if (before.has(name)) return;
+      // 신규 파일 → 우리 세션의 Claude session-id
+      const claudeId = name.replace(/\.jsonl$/, '');
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claudeId)) return;
+      writeLog(`[pty:${sessionId}] claude session-id detected: ${claudeId}`);
+      const win = getMainWindow();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('cli:session-id', sessionId, claudeId);
+      }
+      try { watcher.close(); } catch { /* ignore */ }
+      const entry = cliProcesses.get(sessionId);
+      if (entry) entry.sessionIdWatcher = undefined;
+    });
+    return watcher;
+  } catch (err: any) {
+    writeLog(`[pty:${sessionId}] watcher init failed: ${err?.message || err}`);
+    return undefined;
+  }
+}
 
 const SYSTEM_PROMPT = '당신은 Windows 데스크톱 자동화를 도와주는 유능한 AI 어시스턴트입니다. 한국어로 답변합니다.';
 
@@ -399,7 +459,13 @@ function getMainWindow(): BrowserWindow | null {
 }
 
 // ── IPC: CLI Process (multi-PTY) ──
-ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?: string) => {
+ipcMain.handle('cli:connect', (
+  _event,
+  sessionId: string,
+  provider: string,
+  cwd?: string,
+  claudeSessionId?: string,
+) => {
   // If a PTY already exists for this session, just reattach
   if (cliProcesses.has(sessionId)) {
     return { ok: true, existing: true };
@@ -413,25 +479,36 @@ ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?
 
   try {
     const isWin = process.platform === 'win32';
+    // claude-code + claudeSessionId가 있으면 --resume <id>로 시작 (대화 맥락 복원)
+    const cmdArgs = [...mapping.args];
+    if (provider === 'claude-code' && claudeSessionId) {
+      cmdArgs.push('--resume', claudeSessionId);
+    }
     const file = isWin ? 'cmd.exe' : mapping.cmd;
     const args = isWin
-      ? ['/C', mapping.cmd, ...mapping.args]
-      : mapping.args;
+      ? ['/C', mapping.cmd, ...cmdArgs]
+      : cmdArgs;
 
-    writeLog(`[pty:${sessionId}] spawning: ${file} ${args.join(' ')}`);
+    const spawnCwd = cwd || process.env.USERPROFILE || process.env.HOME || '.';
+    writeLog(`[pty:${sessionId}] spawning: ${file} ${args.join(' ')} (cwd=${spawnCwd})`);
 
     const proc = pty.spawn(file, args, {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
-      cwd: cwd || process.env.USERPROFILE || process.env.HOME || '.',
+      cwd: spawnCwd,
       env: { ...process.env, FORCE_COLOR: '1' } as Record<string, string>,
     });
 
     writeLog(`[pty:${sessionId}] spawned, pid: ${proc.pid}`);
 
-    const entry: PtyEntry = { proc, provider, scrollback: '' };
+    const entry: PtyEntry = { proc, provider, scrollback: '', sessionId };
     cliProcesses.set(sessionId, entry);
+
+    // claude-code 신규 spawn(=resume 아님)일 때만 session-id 감지 watcher 시작
+    if (provider === 'claude-code' && !claudeSessionId) {
+      entry.sessionIdWatcher = watchClaudeSessionId(sessionId, spawnCwd);
+    }
 
     proc.onData((data: string) => {
       // Accumulate scrollback
@@ -441,17 +518,22 @@ ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?
       }
       const win = getMainWindow();  // 매번 동적으로 조회
       if (win && !win.isDestroyed()) {
-        win.webContents.send('cli:output', sessionId, data);
+        // entry.sessionId는 rename 후 갱신되므로 closure-captured sessionId 대신 사용
+        win.webContents.send('cli:output', entry.sessionId, data);
       }
     });
 
     proc.onExit(({ exitCode }: { exitCode: number }) => {
-      writeLog(`[pty:${sessionId}:exit] code=${exitCode}`);
+      const currentId = entry.sessionId;
+      writeLog(`[pty:${currentId}:exit] code=${exitCode}`);
       const win = getMainWindow();  // 동적 조회
       if (win && !win.isDestroyed()) {
-        win.webContents.send('cli:exit', sessionId, exitCode);
+        win.webContents.send('cli:exit', currentId, exitCode);
       }
-      cliProcesses.delete(sessionId);
+      if (entry.sessionIdWatcher) {
+        try { entry.sessionIdWatcher.close(); } catch { /* ignore */ }
+      }
+      cliProcesses.delete(currentId);
     });
 
     return { ok: true };
@@ -461,9 +543,24 @@ ipcMain.handle('cli:connect', (_event, sessionId: string, provider: string, cwd?
   }
 });
 
+ipcMain.handle('cli:rename-session', (_event, oldId: string, newId: string) => {
+  if (oldId === newId) return { ok: true };
+  const entry = cliProcesses.get(oldId);
+  if (!entry) return { ok: false, error: 'session not found' };
+  if (cliProcesses.has(newId)) return { ok: false, error: 'newId in use' };
+  cliProcesses.delete(oldId);
+  entry.sessionId = newId;  // closure에서 사용하는 mutable id 갱신
+  cliProcesses.set(newId, entry);
+  writeLog(`[pty] renamed session ${oldId} → ${newId}`);
+  return { ok: true };
+});
+
 ipcMain.handle('cli:disconnect', (_event, sessionId: string) => {
   const entry = cliProcesses.get(sessionId);
   if (entry) {
+    if (entry.sessionIdWatcher) {
+      try { entry.sessionIdWatcher.close(); } catch { /* ignore */ }
+    }
     entry.proc.kill();
     cliProcesses.delete(sessionId);
   }

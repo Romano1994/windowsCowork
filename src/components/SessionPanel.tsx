@@ -1,139 +1,161 @@
 /**
- * components/SessionPanel.tsx - 세션 관리 패널
+ * components/SessionPanel.tsx - 프로젝트/세션 트리 패널
  *
- * 여러 작업 세션을 생성하고 관리하는 컴포넌트입니다.
- * 각 세션은 독립적인 채팅, 작업, 디렉토리를 가집니다.
- *
- * 주요 기능:
- * - 세션 추가/삭제/전환
- * - 세션 이름 변경
- * - 세션별 상태 저장/복원
+ * 사이드바에 프로젝트(작업 폴더 단위)와 그 하위 세션을 트리 형태로 표시합니다.
+ * - 상단 "새 프로젝트" 버튼: FileExplorer 현재 경로로 프로젝트 lookup/생성 + 첫 세션
+ * - 프로젝트 헤더: 토글, 이름, + 버튼, 삭제 버튼
+ * - 세션 행: 이름(인라인 편집), 입력 대기 인디케이터, 삭제 버튼
+ * - 빈 세션(첫 메시지 전, ephemeral)은 다른 세션 전환 시 자동 삭제됨
  */
 
 import React, { useState, useRef } from 'react';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
-  addSession,
+  createSession,
+  createSessionInProject,
   deleteSession,
+  deleteProject,
+  toggleProjectCollapsed,
   switchSession,
   renameSession,
   saveCurrentState,
-  reorderSessions,
+  reorderProjects,
+  reorderSessionsInProject,
+  deriveProjectName,
+  type Session,
 } from '../store/sessionSlice';
 import { restoreMessages } from '../store/chatSlice';
 import { restoreTasks } from '../store/taskSlice';
 import { setDirectory } from '../store/fileSlice';
 import {
-  disconnect,
   saveSessionConnected,
   restoreSessionConnected,
   removeSessionConnected,
+  setConnected,
 } from '../store/apiSlice';
+import { store } from '../store';
+
+type DragKind = 'project' | 'session';
+interface DragState {
+  kind: DragKind;
+  index: number;
+  projectId?: string;
+}
 
 const SessionPanel: React.FC = () => {
   const dispatch = useAppDispatch();
 
-  // Redux 상태 가져오기
-  const { sessions, activeId } = useAppSelector((s) => s.session);
+  const { projects, sessions, activeId } = useAppSelector((s) => s.session);
   const chat = useAppSelector((s) => s.chat);
   const task = useAppSelector((s) => s.task);
   const file = useAppSelector((s) => s.file);
+  const provider = useAppSelector((s) => s.api.provider);
 
-  /**
-   * 로컬 상태 관리 (useState)
-   *
-   * useState는 컴포넌트 내부 상태를 관리합니다.
-   * Redux와 달리 이 컴포넌트에서만 사용됩니다.
-   */
-  const [nameInput, setNameInput] = useState('');  // 새 세션 이름 입력
-  const [editingId, setEditingId] = useState<string | null>(null);  // 편집 중인 세션 ID
-  const [editName, setEditName] = useState('');  // 편집 중인 이름
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);  // 드롭 대상 인덱스
-  const dragIndexRef = useRef<number | null>(null);  // 드래그 소스 인덱스 (ref로 관리해 리렌더 방지)
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [dragOver, setDragOver] = useState<{ kind: DragKind; index: number; projectId?: string } | null>(null);
+  const dragRef = useRef<DragState | null>(null);
 
-  /**
-   * handleAddSession - 새 세션 추가
-   *
-   * 1. 현재 세션 상태를 저장
-   * 2. 새 세션 생성 (현재 디렉토리를 작업 경로로 설정)
-   * 3. 빈 상태로 초기화
-   */
-  const handleAddSession = () => {
-    const name = nameInput.trim();
-    if (!name) return;
+  const isCliProvider = provider === 'claude-code' || provider === 'codex';
+  const activeSession = sessions.find((s) => s.id === activeId);
 
-    // 현재 활성 세션이 있으면 상태를 저장
-    if (activeId) {
-      const currentSession = sessions.find((s) => s.id === activeId);
-      dispatch(saveCurrentState({
-        messages: chat.messages,
-        nextId: chat.nextId,
-        tasks: task.tasks,
-        taskCounter: task.counter,
-        currentPath: currentSession?.path || file.currentPath,
-      }));
-      dispatch(saveSessionConnected({ sessionId: activeId }));
-    }
+  const sessionsByProject = (projectId: string): Session[] =>
+    sessions.filter((s) => s.projectId === projectId);
 
-    // 새 세션 추가 (현재 파일 탐색기 경로를 작업 경로로)
-    dispatch(addSession({ name, path: file.currentPath }));
-
-    // 새 세션은 빈 상태로 시작
-    dispatch(restoreMessages({ messages: [], nextId: 1 }));
-    dispatch(restoreTasks({ tasks: [], counter: 0 }));
-    dispatch(disconnect());
-    setNameInput('');
+  /** 현재 활성 세션의 chat/task 상태를 슬라이스에 저장 */
+  const persistActive = () => {
+    if (!activeId) return;
+    dispatch(saveCurrentState({
+      messages: chat.messages,
+      nextId: chat.nextId,
+      tasks: task.tasks,
+      taskCounter: task.counter,
+      currentPath: activeSession?.path || file.currentPath,
+    }));
+    dispatch(saveSessionConnected({ sessionId: activeId }));
   };
 
-  /**
-   * handleSwitch - 세션 전환
-   *
-   * @param id - 전환할 세션 ID
-   *
-   * 복잡한 작업 순서:
-   * 1. 현재 세션의 모든 상태 저장
-   * 2. 활성 세션 변경
-   * 3. 대상 세션의 상태 복원
-   * 4. 대상 세션의 디렉토리 로드
-   * 5. 대상 세션의 AI 연결 상태 복원
-   */
-  const handleSwitch = async (id: string) => {
-    if (id === activeId) return;  // 같은 세션이면 무시
+  /** 새 세션 생성 후 PTY auto-spawn 등 후속 처리 */
+  const afterCreate = async (projectPath: string) => {
+    const newId = store.getState().session.activeId;
+    if (!newId) return;
+    dispatch(restoreMessages({ messages: [], nextId: 1 }));
+    dispatch(restoreTasks({ tasks: [], counter: 0 }));
+    try {
+      const result = await window.api.fs.readDir(projectPath);
+      if (result.ok && result.path && result.entries) {
+        dispatch(setDirectory({ path: result.path, entries: result.entries }));
+      }
+    } catch { /* ignore */ }
+    if (isCliProvider) {
+      // connected=true → cliMode 활성화 → TerminalView 마운트 → Claude Code 표시
+      dispatch(setConnected(true));
+      try { await window.api.cli.connect(newId, provider, projectPath); } catch { /* ignore */ }
+    }
+  };
 
-    // 1. 현재 세션 상태 저장
-    if (activeId) {
-      const currentSession = sessions.find((s) => s.id === activeId);
-      dispatch(saveCurrentState({
-        messages: chat.messages,
-        nextId: chat.nextId,
-        tasks: task.tasks,
-        taskCounter: task.counter,
-        currentPath: currentSession?.path || file.currentPath,
-      }));
-      // PTY는 계속 실행되도록 연결 상태만 저장
-      dispatch(saveSessionConnected({ sessionId: activeId }));
+  const handleNewProject = async () => {
+    if (!file.currentPath) return;
+    // 이전 활성이 ephemeral이면 PTY kill
+    if (activeSession?.ephemeral) {
+      try { await window.api.cli.disconnect(activeSession.id); } catch { /* ignore */ }
+      dispatch(removeSessionConnected({ sessionId: activeSession.id }));
+    } else {
+      persistActive();
+    }
+    dispatch(createSession({
+      projectPath: file.currentPath,
+      provider: isCliProvider ? provider : 'claude-code',
+    }));
+    await afterCreate(file.currentPath);
+  };
+
+  const handleAddSessionToProject = async (projectId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
+    if (activeSession?.ephemeral) {
+      try { await window.api.cli.disconnect(activeSession.id); } catch { /* ignore */ }
+      dispatch(removeSessionConnected({ sessionId: activeSession.id }));
+    } else {
+      persistActive();
+    }
+    dispatch(createSessionInProject({
+      projectId,
+      provider: isCliProvider ? provider : 'claude-code',
+    }));
+    await afterCreate(project.path);
+  };
+
+  const handleSwitch = async (id: string) => {
+    if (id === activeId) return;
+
+    // 이전 활성이 ephemeral이면 PTY kill (slice가 세션 자체는 제거)
+    let prevEphemeralId: string | null = null;
+    if (activeSession?.ephemeral) {
+      prevEphemeralId = activeSession.id;
+    } else {
+      persistActive();
     }
 
-    // 2. 활성 세션 변경
     dispatch(switchSession(id));
 
-    // 3. 대상 세션 데이터 복원
-    const target = sessions.find((s) => s.id === id);
+    if (prevEphemeralId) {
+      try { await window.api.cli.disconnect(prevEphemeralId); } catch { /* ignore */ }
+      dispatch(removeSessionConnected({ sessionId: prevEphemeralId }));
+    }
+
+    const target = store.getState().session.sessions.find((s) => s.id === id);
     if (!target) return;
 
-    // 채팅 메시지 복원
     dispatch(restoreMessages({
       messages: target.messages,
-      // nextId는 기존 메시지 중 최대 ID + 1
       nextId: target.messages.length > 0
         ? Math.max(...target.messages.map((m) => m.id)) + 1
         : 1,
     }));
-
-    // 작업 목록 복원
     dispatch(restoreTasks({ tasks: target.tasks, counter: target.taskCounter }));
 
-    // 4. 디렉토리 로드
     if (target.path) {
       try {
         const result = await window.api.fs.readDir(target.path);
@@ -142,27 +164,21 @@ const SessionPanel: React.FC = () => {
         }
       } catch { /* ignore */ }
     }
-
-    // 5. AI 연결 상태 복원
     dispatch(restoreSessionConnected({ sessionId: id }));
   };
 
-  const handleDelete = async (id: string, e: React.MouseEvent) => {
+  const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-
-    // Kill the PTY for this session (if any)
-    try {
-      await window.api.cli.disconnect(id);
-    } catch { /* ignore */ }
+    try { await window.api.cli.disconnect(id); } catch { /* ignore */ }
     dispatch(removeSessionConnected({ sessionId: id }));
 
     const wasActive = id === activeId;
     dispatch(deleteSession(id));
 
     if (wasActive) {
-      const remaining = sessions.filter((s) => s.id !== id);
-      if (remaining.length > 0) {
-        const next = remaining[0];
+      const nextId = store.getState().session.activeId;
+      const next = nextId ? store.getState().session.sessions.find((s) => s.id === nextId) : null;
+      if (next) {
         dispatch(restoreMessages({
           messages: next.messages,
           nextId: next.messages.length > 0
@@ -179,19 +195,52 @@ const SessionPanel: React.FC = () => {
           });
         }
       } else {
-        // Last session deleted — clear all state
         dispatch(restoreMessages({ messages: [], nextId: 1 }));
         dispatch(restoreTasks({ tasks: [], counter: 0 }));
-        dispatch(restoreSessionConnected({ sessionId: '' }));
       }
     }
   };
 
+  const handleDeleteProject = async (projectId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const owned = sessionsByProject(projectId);
+    if (owned.length > 0) {
+      const ok = window.confirm(`이 프로젝트와 그 안의 세션 ${owned.length}개를 삭제할까요?`);
+      if (!ok) return;
+      for (const s of owned) {
+        try { await window.api.cli.disconnect(s.id); } catch { /* ignore */ }
+        dispatch(removeSessionConnected({ sessionId: s.id }));
+      }
+    }
+    const wasActiveInProject = !!activeSession && activeSession.projectId === projectId;
+    dispatch(deleteProject(projectId));
+    if (wasActiveInProject) {
+      const nextId = store.getState().session.activeId;
+      const next = nextId ? store.getState().session.sessions.find((s) => s.id === nextId) : null;
+      if (next) {
+        dispatch(restoreMessages({
+          messages: next.messages,
+          nextId: next.messages.length > 0
+            ? Math.max(...next.messages.map((m) => m.id)) + 1
+            : 1,
+        }));
+        dispatch(restoreTasks({ tasks: next.tasks, counter: next.taskCounter }));
+        dispatch(restoreSessionConnected({ sessionId: next.id }));
+      } else {
+        dispatch(restoreMessages({ messages: [], nextId: 1 }));
+        dispatch(restoreTasks({ tasks: [], counter: 0 }));
+      }
+    }
+  };
+
+  const handleToggleCollapse = (projectId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    dispatch(toggleProjectCollapsed(projectId));
+  };
+
   const handleRename = (id: string) => {
     const trimmed = editName.trim();
-    if (trimmed) {
-      dispatch(renameSession({ id, name: trimmed }));
-    }
+    if (trimmed) dispatch(renameSession({ id, name: trimmed }));
     setEditingId(null);
     setEditName('');
   };
@@ -202,114 +251,179 @@ const SessionPanel: React.FC = () => {
     setEditName(currentName);
   };
 
-  const handleDragStart = (index: number, e: React.DragEvent) => {
-    dragIndexRef.current = index;
+  // ── Drag & Drop ────────────────────────────────────────────────
+  const startDrag = (state: DragState, e: React.DragEvent) => {
+    dragRef.current = state;
     e.dataTransfer.effectAllowed = 'move';
   };
 
-  const handleDragOver = (index: number, e: React.DragEvent) => {
+  const overTarget = (kind: DragKind, index: number, projectId: string | undefined, e: React.DragEvent) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    // 프로젝트 드래그는 프로젝트 슬롯에만, 세션 드래그는 같은 프로젝트의 세션 슬롯에만
+    if (drag.kind !== kind) return;
+    if (kind === 'session' && drag.projectId !== projectId) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (dragIndexRef.current !== null && dragIndexRef.current !== index) {
-      setDragOverIndex(index);
-    }
+    setDragOver({ kind, index, projectId });
   };
 
-  const handleDrop = (index: number, e: React.DragEvent) => {
+  const dropTarget = (kind: DragKind, index: number, projectId: string | undefined, e: React.DragEvent) => {
     e.preventDefault();
-    if (dragIndexRef.current !== null && dragIndexRef.current !== index) {
-      dispatch(reorderSessions({ fromIndex: dragIndexRef.current, toIndex: index }));
+    const drag = dragRef.current;
+    if (!drag) return;
+    if (drag.kind !== kind) { dragRef.current = null; setDragOver(null); return; }
+    if (kind === 'project') {
+      if (drag.index !== index) {
+        dispatch(reorderProjects({ fromIndex: drag.index, toIndex: index }));
+      }
+    } else if (kind === 'session' && projectId && drag.projectId === projectId) {
+      if (drag.index !== index) {
+        dispatch(reorderSessionsInProject({ projectId, fromIndex: drag.index, toIndex: index }));
+      }
     }
-    dragIndexRef.current = null;
-    setDragOverIndex(null);
+    dragRef.current = null;
+    setDragOver(null);
   };
 
-  const handleDragEnd = () => {
-    dragIndexRef.current = null;
-    setDragOverIndex(null);
-  };
+  const endDrag = () => { dragRef.current = null; setDragOver(null); };
 
-  const shortenPath = (p: string) => {
-    if (!p) return '(no path)';
-    const parts = p.replace(/\\/g, '/').split('/');
-    if (parts.length <= 2) return p;
-    return '…/' + parts.slice(-2).join('/');
+  // ── 렌더 ───────────────────────────────────────────────────────
+  const renderSession = (session: Session, indexInProject: number) => {
+    const isActive = session.id === activeId;
+    const isDragOver = dragOver?.kind === 'session'
+      && dragOver.projectId === session.projectId
+      && dragOver.index === indexInProject;
+
+    return (
+      <li
+        key={session.id}
+        className={[
+          'session-row',
+          isActive ? 'active' : '',
+          session.ephemeral ? 'ephemeral' : '',
+          isDragOver ? 'drag-over' : '',
+        ].filter(Boolean).join(' ')}
+        onClick={() => handleSwitch(session.id)}
+        draggable
+        onDragStart={(e) => startDrag({ kind: 'session', index: indexInProject, projectId: session.projectId }, e)}
+        onDragOver={(e) => overTarget('session', indexInProject, session.projectId, e)}
+        onDrop={(e) => dropTarget('session', indexInProject, session.projectId, e)}
+        onDragEnd={endDrag}
+      >
+        <div className="session-info">
+          {editingId === session.id ? (
+            <input
+              className="session-rename-input"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRename(session.id);
+                if (e.key === 'Escape') setEditingId(null);
+              }}
+              onBlur={() => handleRename(session.id)}
+              onClick={(e) => e.stopPropagation()}
+              autoFocus
+            />
+          ) : (
+            <span
+              className="session-name"
+              onDoubleClick={(e) => startRename(session.id, session.name, e)}
+            >
+              {session.name}
+            </span>
+          )}
+        </div>
+        {session.waitingForInput && !isActive && (
+          <div className="session-attention-badge" title="Waiting for input">
+            <div className="pulse-dot"></div>
+          </div>
+        )}
+        <button
+          className="session-delete"
+          onClick={(e) => handleDeleteSession(session.id, e)}
+          title="Delete session"
+        >
+          {'×'}
+        </button>
+      </li>
+    );
   };
 
   return (
     <div id="panel-sessions">
       <div className="panel-header">
-        <span className="panel-label">Sessions</span>
-        <span className="session-count">{sessions.length}</span>
+        <span className="panel-label">Projects</span>
+        <button
+          className="panel-action"
+          onClick={handleNewProject}
+          title="현재 파일 탐색기 폴더로 새 프로젝트/세션 생성"
+        >
+          + 새 프로젝트
+        </button>
       </div>
-      <div id="session-input-area">
-        <input
-          type="text"
-          id="session-input"
-          value={nameInput}
-          onChange={(e) => setNameInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleAddSession()}
-          placeholder="New session name..."
-        />
-        <button id="btn-add-session" onClick={handleAddSession}>+</button>
-      </div>
-      <ul id="session-list">
-        {sessions.map((session, index) => (
-          <li
-            key={session.id}
-            className={[
-              session.id === activeId ? 'active' : '',
-              dragOverIndex === index ? 'drag-over' : '',
-            ].filter(Boolean).join(' ')}
-            onClick={() => handleSwitch(session.id)}
-            draggable
-            onDragStart={(e) => handleDragStart(index, e)}
-            onDragOver={(e) => handleDragOver(index, e)}
-            onDrop={(e) => handleDrop(index, e)}
-            onDragEnd={handleDragEnd}
-          >
-            <div className="session-info">
-              {editingId === session.id ? (
-                <input
-                  className="session-rename-input"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleRename(session.id);
-                    if (e.key === 'Escape') setEditingId(null);
-                  }}
-                  onBlur={() => handleRename(session.id)}
-                  onClick={(e) => e.stopPropagation()}
-                  autoFocus
-                />
-              ) : (
-                <span
-                  className="session-name"
-                  onDoubleClick={(e) => startRename(session.id, session.name, e)}
-                >
-                  {session.name}
-                </span>
-              )}
-              <span className="session-path">{shortenPath(session.path)}</span>
-            </div>
-            {/* 입력 대기 뱃지: 백그라운드 세션에서 입력 대기 중일 때 표시 */}
-            {session.waitingForInput && session.id !== activeId && (
-              <div className="session-attention-badge" title="Waiting for input">
-                <div className="pulse-dot"></div>
-              </div>
-            )}
-            <button
-              className="session-delete"
-              onClick={(e) => handleDelete(session.id, e)}
-              title="Delete session"
+
+      <ul id="project-list">
+        {projects.map((project, projectIndex) => {
+          const projectSessions = sessionsByProject(project.id);
+          const hasActiveSession = !!activeSession && activeSession.projectId === project.id;
+          // 활성 세션의 프로젝트는 collapsed=true여도 강제 펼침
+          const expanded = !project.collapsed || hasActiveSession;
+          const hasWaiting = projectSessions.some((s) => s.waitingForInput && s.id !== activeId);
+          const isProjectDragOver = dragOver?.kind === 'project' && dragOver.index === projectIndex;
+
+          return (
+            <li
+              key={project.id}
+              className={['project-block', isProjectDragOver ? 'drag-over' : ''].filter(Boolean).join(' ')}
             >
-              {'\u00D7'}
-            </button>
-          </li>
-        ))}
+              <div
+                className={['project-header', hasActiveSession ? 'has-active' : ''].filter(Boolean).join(' ')}
+                onClick={(e) => handleToggleCollapse(project.id, e)}
+                draggable
+                onDragStart={(e) => startDrag({ kind: 'project', index: projectIndex }, e)}
+                onDragOver={(e) => overTarget('project', projectIndex, undefined, e)}
+                onDrop={(e) => dropTarget('project', projectIndex, undefined, e)}
+                onDragEnd={endDrag}
+                title={project.path}
+              >
+                <span className="project-caret">{expanded ? '▾' : '▸'}</span>
+                <span className="project-name">{deriveProjectName(project.path)}</span>
+                {hasWaiting && !expanded && (
+                  <div className="session-attention-badge" title="대기 중인 세션 있음">
+                    <div className="pulse-dot"></div>
+                  </div>
+                )}
+                <button
+                  className="project-add"
+                  onClick={(e) => handleAddSessionToProject(project.id, e)}
+                  title="이 프로젝트에 세션 추가"
+                >
+                  +
+                </button>
+                <button
+                  className="project-delete"
+                  onClick={(e) => handleDeleteProject(project.id, e)}
+                  title="프로젝트 삭제"
+                >
+                  {'×'}
+                </button>
+              </div>
+              {expanded && (
+                <ul className="session-sublist">
+                  {projectSessions.map((session, i) => renderSession(session, i))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
       </ul>
-      {sessions.length === 0 && (
-        <div id="session-empty">No sessions. Create one above.</div>
+
+      {projects.length === 0 && (
+        <div id="session-empty">
+          프로젝트가 없습니다.<br />
+          파일 탐색기에서 작업 폴더로 이동한 뒤 “+ 새 프로젝트”를 누르세요.
+        </div>
       )}
     </div>
   );

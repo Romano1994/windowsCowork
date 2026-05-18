@@ -107,6 +107,12 @@ const ChatPanel: React.FC = () => {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   /**
+   * isComposingRef - IME(한글/중국어 등) 조합 진행 여부
+   * 조합 중에는 Enter 전송/단어삭제가 발생하지 않도록 추적합니다.
+   */
+  const isComposingRef = useRef(false);
+
+  /**
    * streamTextRef - 스트리밍 중인 텍스트를 임시 저장
    * AI 응답이 청크 단위로 들어올 때 누적합니다.
    */
@@ -368,6 +374,14 @@ const ChatPanel: React.FC = () => {
    * React.KeyboardEvent<T>는 특정 요소(T)에서 발생하는 키보드 이벤트 타입입니다.
    */
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    /**
+     * IME 조합 중에는 어떤 단축키도 처리하지 않습니다.
+     * 조합 중 Enter/Ctrl+Backspace는 조합 버퍼를 손상시켜 글자가 유실됩니다.
+     */
+    if (e.nativeEvent.isComposing) {
+      return;
+    }
+
     if (e.key === 'Backspace' && e.ctrlKey && !e.altKey) {
       e.preventDefault();
 
@@ -517,6 +531,17 @@ const ChatPanel: React.FC = () => {
               setInput(e.target.value);
             }}
             onKeyDown={handleKeyDown}
+            onCompositionStart={() => {
+              isComposingRef.current = true;
+            }}
+            onCompositionEnd={(e) => {
+              /**
+               * 조합 종료 시 확정된 최종 값을 동기화합니다.
+               * 제어 컴포넌트 value와 DOM 값이 어긋나는 경계 상황을 방어합니다.
+               */
+              isComposingRef.current = false;
+              setInput(e.currentTarget.value);
+            }}
             placeholder="Enter message..."
             rows={2}
           />

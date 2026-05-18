@@ -18,6 +18,9 @@ import SessionPanel from './components/SessionPanel';
 import ApiPanel from './components/ApiPanel';
 import TodoPanel from './components/TodoPanel';
 
+import { useAppDispatch } from './store/hooks';
+import { promoteSessionId } from './store/sessionSlice';
+
 const STORAGE_KEY_LEFT = 'panel-left-width';
 const STORAGE_KEY_RIGHT = 'panel-right-width';
 const MIN_LEFT = 160;
@@ -36,6 +39,18 @@ const MAX_RIGHT = 500;
  * 클래스 컴포넌트보다 간결하고 hooks를 사용할 수 있어서 선호됩니다.
  */
 const App: React.FC = () => {
+  const dispatch = useAppDispatch();
+
+  // Claude Code session-id 이벤트 수신: PTY Map 키 변경 → 휘발성 세션을 영속화된 세션으로 승격
+  useEffect(() => {
+    const off = window.api.cli.onSessionId(async (sessionId, claudeSessionId) => {
+      if (sessionId === claudeSessionId) return;
+      try { await window.api.cli.renameSession(sessionId, claudeSessionId); } catch { /* ignore */ }
+      dispatch(promoteSessionId({ oldId: sessionId, newId: claudeSessionId }));
+    });
+    return off;
+  }, [dispatch]);
+
   const [leftWidth, setLeftWidth] = useState(() =>
     parseInt(localStorage.getItem(STORAGE_KEY_LEFT) || '260', 10)
   );
